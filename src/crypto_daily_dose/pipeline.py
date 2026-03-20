@@ -3,7 +3,6 @@ import email.utils
 import json
 import re
 import sys
-import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -11,38 +10,57 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 
-WORKDIR = Path(__file__).resolve().parents[1]
-STATE_DIR = WORKDIR / "state"
-STATE_FILE = STATE_DIR / "crypto_daily_dose.json"
-OUTPUT_FILE = STATE_DIR / "crypto_daily_dose_report.md"
-PUSHOVER_CFG = STATE_DIR / "pushover.json"
+ROOT = Path(__file__).resolve().parents[2]
+CONFIG_PATH = ROOT / "config.json"
 API_PUSHOVER = "https://api.pushover.net/1/messages.json"
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) OpenClaw-CryptoDailyDose/0.1"
-LOOKBACK_HOURS = 30
-MAX_RSS_ITEMS_PER_FEED = 12
-MAX_GITHUB_ITEMS = 12
-MAX_EIP_ITEMS = 8
+DEFAULT_CONFIG = {
+    "user_agent": "Mozilla/5.0 OpenClaw-CryptoDailyDose/0.2",
+    "lookback_hours": 30,
+    "limits": {"rss_items_per_feed": 12, "github_items": 12},
+    "thresholds": {"top": 8, "secondary": 6},
+    "paths": {
+        "state_dir": "state",
+        "state_file": "crypto_daily_dose.json",
+        "output_file": "crypto_daily_dose_report.md",
+        "pushover_cfg": str(ROOT / "state" / "pushover.json"),
+    },
+    "rss_feeds": [],
+    "github_endpoints": [],
+    "categories": [],
+}
 
-RSS_FEEDS = [
-    ("The Block", "https://www.theblock.co/rss.xml", "news"),
-    ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/", "news"),
-    ("Blockworks", "https://blockworks.co/feed/", "news"),
-    ("Ethereum Blog", "https://blog.ethereum.org/feed.xml", "blog"),
-    ("EIPs", "https://eips.ethereum.org/feed.xml", "eip"),
-]
 
-GITHUB_ENDPOINTS = [
-    ("Ethereum/EIPs Pulls", "https://api.github.com/repos/ethereum/EIPs/pulls?state=all&sort=updated&direction=desc&per_page=10", "github_pull"),
-    ("Ethereum/EIPs Events", "https://api.github.com/repos/ethereum/EIPs/events?per_page=20", "github_event"),
-]
+def deep_merge(base: dict, override: dict) -> dict:
+    out = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
 
-CATEGORY_MAP = [
-    ("Security", ["security", "exploit", "hack", "vulnerability", "breach", "attack", "phishing", "drain", "bug bounty"]),
-    ("Protocol / EIP", ["eip-", "eips", "ethereum improvement proposal", "hard fork", "pectra", "fusaka", "ethereum", "opcodes", "erc-"]),
-    ("Wallet / Infra", ["wallet", "custody", "rpc", "node", "validator", "rollup", "sequencer", "bridge", "infrastructure", "client", "l2", "interop"]),
-    ("Payments", ["payment", "payments", "stablecoin", "merchant", "remittance", "settlement"]),
-    ("Competitor", ["solana", "sui", "aptos", "avalanche", "berachain", "base", "tron"]),
-]
+
+def load_config() -> dict:
+    if CONFIG_PATH.exists():
+        raw = json.loads(CONFIG_PATH.read_text())
+        return deep_merge(DEFAULT_CONFIG, raw)
+    return DEFAULT_CONFIG
+
+
+CONFIG = load_config()
+STATE_DIR = ROOT / CONFIG["paths"]["state_dir"]
+STATE_FILE = STATE_DIR / CONFIG["paths"]["state_file"]
+OUTPUT_FILE = STATE_DIR / CONFIG["paths"]["output_file"]
+PUSHOVER_CFG = Path(CONFIG["paths"]["pushover_cfg"])
+USER_AGENT = CONFIG["user_agent"]
+LOOKBACK_HOURS = int(CONFIG["lookback_hours"])
+MAX_RSS_ITEMS_PER_FEED = int(CONFIG["limits"]["rss_items_per_feed"])
+MAX_GITHUB_ITEMS = int(CONFIG["limits"]["github_items"])
+TOP_THRESHOLD = int(CONFIG["thresholds"]["top"])
+SECONDARY_THRESHOLD = int(CONFIG["thresholds"]["secondary"])
+RSS_FEEDS = [tuple(x) for x in CONFIG["rss_feeds"]]
+GITHUB_ENDPOINTS = [tuple(x) for x in CONFIG["github_endpoints"]]
+CATEGORY_MAP = [(x[0], x[1]) for x in CONFIG["categories"]]
 
 
 def now_utc() -> datetime:
@@ -78,15 +96,12 @@ def strip_html(text: str) -> str:
     text = re.sub(r"<style.*?>.*?</style>", " ", text, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", " ", text)
     text = unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def compact(text: str, limit: int = 240) -> str:
     text = re.sub(r"\s+", " ", (text or "").strip())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def parse_dt(value: str | None) -> datetime | None:
@@ -129,29 +144,20 @@ def title_similarity(a: str, b: str) -> float:
 
 def score_item(item: dict) -> dict:
     text = f"{item.get('title','')} {item.get('content','')} {item.get('source','')}".lower()
-    relevance = 0
-    impact = 0
-    novelty = 0
-    actionability = 0
-
     relevance_terms = [
         "ethereum", "eip", "l2", "rollup", "security", "wallet", "stablecoin", "infrastructure",
         "validator", "bridge", "protocol", "payments", "custody", "client", "github", "erc-",
     ]
-    relevance = min(3, sum(1 for t in relevance_terms if t in text and len(t) > 1))
-    if relevance > 0:
-        relevance = min(3, 1 + relevance // 2)
-
     impact_terms = ["launch", "upgrade", "proposal", "approved", "merged", "mainnet", "security", "exploit", "funding", "integration", "release"]
-    impact = min(3, sum(1 for t in impact_terms if t in text))
-    if impact > 0:
-        impact = min(3, 1 + impact // 2)
+    actionable_terms = ["what this means", "breaking", "guide", "proposal", "draft", "review", "deadline", "migration"]
 
+    relevance = min(3, sum(1 for t in relevance_terms if t in text and len(t) > 1))
+    relevance = min(3, 1 + relevance // 2) if relevance > 0 else 0
+    impact = min(3, sum(1 for t in impact_terms if t in text))
+    impact = min(3, 1 + impact // 2) if impact > 0 else 0
     novelty = 2 if item.get("type") in {"github_pull", "github_event", "eip"} else 1
     if item.get("hours_ago", 999) <= 12:
         novelty = min(2, novelty + 1)
-
-    actionable_terms = ["what this means", "breaking", "guide", "proposal", "draft", "review", "deadline", "migration"]
     actionability = min(2, sum(1 for t in actionable_terms if t in text))
     if item.get("type") in {"github_pull", "eip"}:
         actionability = max(actionability, 1)
@@ -163,21 +169,13 @@ def score_item(item: dict) -> dict:
         penalty += 3
 
     total = max(0, relevance + impact + novelty + actionability - penalty)
-    if total >= 8:
+    if total >= TOP_THRESHOLD:
         bucket = "Top"
-    elif total >= 6:
+    elif total >= SECONDARY_THRESHOLD:
         bucket = "Secondary"
     else:
         bucket = "Discard"
-
-    return {
-        "relevance": relevance,
-        "impact": impact,
-        "novelty": novelty,
-        "actionability": actionability,
-        "total": total,
-        "bucket": bucket,
-    }
+    return {"relevance": relevance, "impact": impact, "novelty": novelty, "actionability": actionability, "total": total, "bucket": bucket}
 
 
 def classify(item: dict) -> str:
@@ -194,7 +192,6 @@ def parse_feed_entries(source_name: str, url: str, item_type: str, cutoff: datet
     raw = fetch(url, accept="application/rss+xml, application/atom+xml, text/xml, application/xml")
     root = ET.fromstring(raw)
     entries = []
-
     channel = root.find("channel")
     if channel is not None:
         nodes = channel.findall("item")
@@ -206,14 +203,7 @@ def parse_feed_entries(source_name: str, url: str, item_type: str, cutoff: datet
             dt = parse_dt(pub)
             if dt and dt < cutoff:
                 continue
-            entries.append({
-                "title": strip_html(title),
-                "content": compact(strip_html(desc), 280),
-                "url": link,
-                "source": source_name,
-                "type": item_type,
-                "timestamp": dt.isoformat() if dt else "",
-            })
+            entries.append({"title": strip_html(title), "content": compact(strip_html(desc), 280), "url": link, "source": source_name, "type": item_type, "timestamp": dt.isoformat() if dt else ""})
     else:
         ns = {"a": "http://www.w3.org/2005/Atom"}
         nodes = root.findall("a:entry", ns)
@@ -230,20 +220,12 @@ def parse_feed_entries(source_name: str, url: str, item_type: str, cutoff: datet
             dt = parse_dt(pub)
             if dt and dt < cutoff:
                 continue
-            entries.append({
-                "title": strip_html(title),
-                "content": compact(strip_html(summary), 280),
-                "url": link,
-                "source": source_name,
-                "type": item_type,
-                "timestamp": dt.isoformat() if dt else "",
-            })
+            entries.append({"title": strip_html(title), "content": compact(strip_html(summary), 280), "url": link, "source": source_name, "type": item_type, "timestamp": dt.isoformat() if dt else ""})
     return entries
 
 
 def fetch_json(url: str):
-    text = fetch(url, accept="application/json")
-    return json.loads(text)
+    return json.loads(fetch(url, accept="application/json"))
 
 
 def parse_github(cutoff: datetime) -> list[dict]:
@@ -255,13 +237,9 @@ def parse_github(cutoff: datetime) -> list[dict]:
                 dt = parse_dt(pr.get("updated_at") or pr.get("created_at"))
                 if dt and dt < cutoff:
                     continue
-                title = pr.get("title") or ""
-                body = pr.get("body") or ""
-                state = pr.get("state") or ""
-                draft = pr.get("draft")
                 items.append({
-                    "title": f"PR #{pr.get('number')}: {title}",
-                    "content": compact(f"{state.upper()} | draft={draft}. {strip_html(body)}", 280),
+                    "title": f"PR #{pr.get('number')}: {pr.get('title') or ''}",
+                    "content": compact(f"{(pr.get('state') or '').upper()} | draft={pr.get('draft')}. {strip_html(pr.get('body') or '')}", 280),
                     "url": pr.get("html_url") or "",
                     "source": source_name,
                     "type": item_type,
@@ -274,19 +252,13 @@ def parse_github(cutoff: datetime) -> list[dict]:
                     continue
                 actor = (ev.get("actor") or {}).get("login") or "unknown"
                 event = ev.get("event") or "event"
-                commit_id = (ev.get("commit_id") or "")[:8]
                 issue = ev.get("issue") or {}
-                issue_no = issue.get("number")
-                issue_title = issue.get("title") or ""
-                title = f"{event} by {actor}"
-                if issue_no:
-                    title = f"Issue/PR #{issue_no}: {issue_title or event}"
-                body = f"GitHub {event}. actor={actor}. commit={commit_id}"
                 if event in {"referenced", "mentioned", "subscribed"}:
                     continue
+                title = f"Issue/PR #{issue.get('number')}: {issue.get('title') or event}" if issue.get("number") else f"{event} by {actor}"
                 items.append({
                     "title": title,
-                    "content": compact(body, 240),
+                    "content": compact(f"GitHub {event}. actor={actor}. commit={(ev.get('commit_id') or '')[:8]}", 240),
                     "url": issue.get("html_url") or "https://github.com/ethereum/EIPs",
                     "source": source_name,
                     "type": item_type,
@@ -300,7 +272,7 @@ def dedup(items: list[dict]) -> list[dict]:
     for item in sorted(items, key=lambda x: x.get("timestamp", ""), reverse=True):
         drop = False
         u = canonical_url(item.get("url", ""))
-        for kept in out:
+        for kept in list(out):
             ku = canonical_url(kept.get("url", ""))
             if u and ku and u == ku:
                 drop = True
@@ -323,10 +295,8 @@ def enrich(items: list[dict]) -> list[dict]:
     now = now_utc()
     for item in items:
         dt = parse_dt(item.get("timestamp"))
-        hours = round((now - dt).total_seconds() / 3600, 1) if dt else 999
-        item["hours_ago"] = hours
-        score = score_item(item)
-        item["score"] = score
+        item["hours_ago"] = round((now - dt).total_seconds() / 3600, 1) if dt else 999
+        item["score"] = score_item(item)
         item["category"] = classify(item)
         enriched.append(item)
     return enriched
@@ -340,14 +310,15 @@ def build_report(items: list[dict]) -> tuple[str, str]:
     for item in top_items + secondary:
         grouped.setdefault(item["category"], []).append(item)
 
-    lines = [f"# Crypto Daily Dose — {today}", ""]
-    lines.append("## Top Priority")
+    lines = [f"# Crypto Daily Dose — {today}", "", "## Top Priority"]
     if top_items:
         for item in top_items:
-            lines.append(f"- **{item['title']}**")
-            lines.append(f"  - What happened: {compact(item['content'], 180) or 'See source.'}")
-            lines.append(f"  - Why it matters: score {item['score']['total']}/10 · {item['category']}")
-            lines.append(f"  - Source: {item['source']} — {item['url']}")
+            lines += [
+                f"- **{item['title']}**",
+                f"  - What happened: {compact(item['content'], 180) or 'See source.'}",
+                f"  - Why it matters: score {item['score']['total']}/10 · {item['category']}",
+                f"  - Source: {item['source']} — {item['url']}",
+            ]
     else:
         lines.append("- No clear top-priority crypto intel today.")
     lines.append("")
@@ -355,52 +326,32 @@ def build_report(items: list[dict]) -> tuple[str, str]:
     for section in ["Wallet / Infra", "Protocol / EIP", "Security", "Payments", "Competitor"]:
         lines.append(f"## {section}")
         entries = grouped.get(section, [])[:3]
-        if entries:
-            for item in entries:
-                lines.append(f"- {item['title']} ({item['source']})")
-        else:
-            lines.append("- N/A")
+        lines.extend([f"- {item['title']} ({item['source']})" for item in entries] or ["- N/A"])
         lines.append("")
 
     lines.append("## What matters today")
-    if top_items or secondary:
-        summary_items = (top_items + secondary)[:5]
-        for item in summary_items:
-            lines.append(f"- {item['category']}: {compact(item['title'], 110)}")
-    else:
-        lines.append("- Quiet day. Mostly low-signal or repetitive coverage.")
+    summary_items = (top_items + secondary)[:5]
+    lines.extend([f"- {item['category']}: {compact(item['title'], 110)}" for item in summary_items] or ["- Quiet day. Mostly low-signal or repetitive coverage."])
 
-    if top_items:
-        push = "Crypto Brief:\n" + "\n".join(
-            f"{idx}) {compact(item['title'], 80)}" for idx, item in enumerate(top_items[:2], 1)
-        )
-    else:
-        push = "No high-priority crypto intel today."
-
+    push = "Crypto Brief:\n" + "\n".join(f"{idx}) {compact(item['title'], 80)}" for idx, item in enumerate(top_items[:2], 1)) if top_items else "No high-priority crypto intel today."
     return "\n".join(lines).strip() + "\n", push
 
 
 def run(send_pushover: bool = True) -> int:
     cutoff = now_utc() - timedelta(hours=LOOKBACK_HOURS)
-    items = []
-    errors = []
-
+    items, errors = [], []
     for source_name, url, item_type in RSS_FEEDS:
         try:
             items.extend(parse_feed_entries(source_name, url, item_type, cutoff))
         except Exception as e:
             errors.append(f"RSS {source_name}: {e}")
-
     try:
         items.extend(parse_github(cutoff))
     except Exception as e:
         errors.append(f"GitHub: {e}")
 
-    items = dedup(items)
-    items = enrich(items)
-    ranked = sorted(items, key=lambda x: (x["score"]["total"], -x.get("hours_ago", 999)), reverse=True)
+    ranked = sorted(enrich(dedup(items)), key=lambda x: (x["score"]["total"], -x.get("hours_ago", 999)), reverse=True)
     report, push = build_report(ranked)
-
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(report)
     save_json(STATE_FILE, {
@@ -414,21 +365,14 @@ def run(send_pushover: bool = True) -> int:
 
     if send_pushover:
         cfg = load_json(PUSHOVER_CFG, {})
-        token = cfg.get("app_token")
-        user = cfg.get("user_key")
+        token, user = cfg.get("app_token"), cfg.get("user_key")
         if token and user:
-            payload = urllib.parse.urlencode({
-                "token": token,
-                "user": user,
-                "title": "Crypto Daily Dose",
-                "message": push,
-            }).encode()
+            payload = urllib.parse.urlencode({"token": token, "user": user, "title": "Crypto Daily Dose", "message": push}).encode()
             req = urllib.request.Request(API_PUSHOVER, data=payload, method="POST")
             with urllib.request.urlopen(req, timeout=20) as resp:
-                body = resp.read().decode("utf-8", errors="replace")
-            parsed = json.loads(body)
+                parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
             if parsed.get("status") != 1:
-                errors.append(f"Pushover API error: {body}")
+                errors.append(f"Pushover API error: {parsed}")
         else:
             errors.append("Pushover config missing")
 
@@ -439,5 +383,4 @@ def run(send_pushover: bool = True) -> int:
 
 
 if __name__ == "__main__":
-    send = "--no-pushover" not in sys.argv
-    raise SystemExit(run(send_pushover=send))
+    raise SystemExit(run(send_pushover=("--no-pushover" not in sys.argv)))
