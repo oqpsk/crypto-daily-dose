@@ -415,12 +415,12 @@ def sort_key(item: dict):
 
 def zh_category(category: str) -> str:
     mapping = {
-        "Wallet / AA / UX": "钱包 / AA / 交互体验",
-        "Protocol / EIP / Infra": "协议 / EIP / 基础设施",
-        "Security / Risk / Compliance": "安全 / 风险 / 合规",
-        "TRON / Stablecoin / Payments": "TRON / 稳定币 / 支付",
-        "Competitor Intelligence": "竞品情报",
-        "Market Structure / Narrative": "市场结构 / 叙事",
+        "Wallet / AA / UX": "💼 钱包 / AA / 交互体验",
+        "Protocol / EIP / Infra": "🧱 协议 / EIP / 基础设施",
+        "Security / Risk / Compliance": "🛡️ 安全 / 风险 / 合规",
+        "TRON / Stablecoin / Payments": "💸 TRON / 稳定币 / 支付",
+        "Competitor Intelligence": "🧭 竞品情报",
+        "Market Structure / Narrative": "📊 市场结构 / 叙事",
     }
     return mapping.get(category, category)
 
@@ -439,6 +439,45 @@ def why_it_matters(item: dict) -> str:
     if category == "Protocol / EIP / Infra":
         return "若该协议变化继续推进，可能影响钱包或基础设施侧的中长期规划。"
     return f"高信号基础设施/叙事信息，当前评分 {score.get('total', 0)}。"
+
+
+def summarize_title_zh(item: dict) -> str:
+    title = item.get("title", "")
+    category = item.get("category")
+    text = f"{title} {item.get('content','')}".lower()
+
+    if category == "Wallet / AA / UX":
+        if "eip-8141" in text:
+            return "EIP-8141 出现重要更新，涉及钱包签名与 AA 设计"
+        if "eip-7702" in text:
+            return "EIP-7702 有新进展，值得关注钱包签名与授权体验"
+        if "eip-4337" in text:
+            return "EIP-4337 相关进展出现，关系到账户抽象实施路径"
+        if "ledger" in text:
+            return "Ledger 有新动作，反映硬件钱包与合规化进程变化"
+        return "钱包与账户抽象方向出现值得关注的新进展"
+
+    if category == "TRON / Stablecoin / Payments":
+        if "stablecoin" in text or "稳定币" in title:
+            return "稳定币相关规则或基础设施出现关键变化"
+        if "tron" in text or "trc20" in text:
+            return "TRON 支付与费率模型出现值得关注的新变化"
+        if "usdc" in text or "usdt" in text:
+            return "稳定币结算场景扩大，值得关注支付基础设施变化"
+        return "支付与稳定币基础设施出现重要新动向"
+
+    if category == "Security / Risk / Compliance":
+        if any(t in text for t in ["exploit", "hack", "phishing", "drain", "critical"]):
+            return "出现高风险安全事件，需关注资产与签名风险"
+        return "监管或合规侧出现重要变化，值得及时关注"
+
+    if category == "Protocol / EIP / Infra":
+        return "协议与基础设施层出现重要更新，可能影响钱包或产品路线"
+
+    if category == "Competitor Intelligence":
+        return "竞品出现新动作，可能反映产品方向或增长策略变化"
+
+    return compact(title, 40)
 
 
 def build_report(items: list[dict]) -> tuple[str, str | None]:
@@ -463,7 +502,7 @@ def build_report(items: list[dict]) -> tuple[str, str | None]:
 
     if urgent_items:
         top = urgent_items[0]
-        push = f"【加密情报】{compact(top['title'], 90)}"
+        push = f"【加密情报】{summarize_title_zh(top)}"
     else:
         push = None
     return "\n".join(lines).strip() + "\n", push
