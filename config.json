@@ -1,13 +1,16 @@
 {
-  "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) OpenClaw-CryptoDailyDose/0.2",
+  "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) OpenClaw-CryptoDailyDose/0.3",
   "lookback_hours": 30,
   "limits": {
     "rss_items_per_feed": 12,
-    "github_items": 12
+    "github_items": 12,
+    "discord_items": 6
   },
   "thresholds": {
     "top": 8,
-    "secondary": 6
+    "secondary": 6,
+    "discord_min": 7,
+    "urgent": 9
   },
   "paths": {
     "state_dir": "state",
@@ -26,11 +29,25 @@
     ["Ethereum/EIPs Pulls", "https://api.github.com/repos/ethereum/EIPs/pulls?state=all&sort=updated&direction=desc&per_page=10", "github_pull"],
     ["Ethereum/EIPs Events", "https://api.github.com/repos/ethereum/EIPs/events?per_page=20", "github_event"]
   ],
+  "priority_topics": {
+    "wallet_aa_ux": ["wallet", "account abstraction", "aa", "eip-7702", "eip-4337", "eip-8141", "signing", "transaction ux", "gas abstraction", "fee sponsorship", "embedded wallet", "social login", "cross-chain ux", "mobile wallet", "smart account"],
+    "protocol_infra": ["ethereum upgrade", "hard fork", "eip-", "erc-", "rollup", "sequencer", "data availability", "execution layer", "consensus layer", "l2", "bridge", "interop", "client release"],
+    "security_risk_compliance": ["exploit", "hack", "vulnerability", "approval draining", "signature abuse", "phishing", "sanctions", "aml", "compliance", "regulator", "sec", "ofac"],
+    "tron_stablecoin_payments": ["tron", "trc20", "usdt", "usdc", "stablecoin", "payment rail", "cross-border payment", "gas model", "fee model", "energy model", "settlement", "merchant"],
+    "competitors": ["phantom", "metamask", "safe", "rabby", "zerion", "okx wallet", "bitget wallet", "trust wallet"],
+    "market_structure": ["adoption", "capital flow", "stablecoin growth", "market structure", "infrastructure narrative"]
+  },
+  "exclusions": {
+    "hard_drop": ["meme coin", "memecoin", "altcoins pumping", "market rallies", "crypto is the future", "price prediction", "opinion thread"],
+    "low_signal_github": ["typo", "grammar", "formatting", "comment syntax", "small clean up", "small cleanup", "fix docs", "docs only", "editorial", "wording", "template", "stagnant", "stale", "comment fix"],
+    "price_only": ["btc up", "eth crashes", "bitcoin price", "ether price", "market wrap", "trading", "etf inflows"]
+  },
   "categories": [
-    ["Security", ["security", "exploit", "hack", "vulnerability", "breach", "attack", "phishing", "drain", "bug bounty"]],
-    ["Protocol / EIP", ["eip-", "eips", "ethereum improvement proposal", "hard fork", "pectra", "fusaka", "ethereum", "opcodes", "erc-"]],
-    ["Wallet / Infra", ["wallet", "custody", "rpc", "node", "validator", "rollup", "sequencer", "bridge", "infrastructure", "client", "l2", "interop"]],
-    ["Payments", ["payment", "payments", "stablecoin", "merchant", "remittance", "settlement"]],
-    ["Competitor", ["solana", "sui", "aptos", "avalanche", "berachain", "base", "tron"]]
+    ["Wallet / AA / UX", ["wallet", "account abstraction", "aa", "eip-7702", "eip-4337", "eip-8141", "signing", "smart account", "embedded wallet", "social login", "gas abstraction", "mobile wallet"]],
+    ["Protocol / EIP / Infra", ["eip-", "erc-", "ethereum upgrade", "hard fork", "rollup", "sequencer", "data availability", "execution layer", "consensus layer", "client"]],
+    ["Security / Risk / Compliance", ["security", "exploit", "hack", "vulnerability", "approval draining", "signature abuse", "phishing", "sanctions", "aml", "compliance", "regulatory"]],
+    ["TRON / Stablecoin / Payments", ["tron", "trc20", "usdt", "usdc", "stablecoin", "payment", "payments", "settlement", "merchant", "cross-border", "energy model", "fee model"]],
+    ["Competitor Intelligence", ["phantom", "metamask", "safe", "rabby", "zerion", "okx wallet", "bitget wallet", "trust wallet"]],
+    ["Market Structure / Narrative", ["adoption", "capital flow", "stablecoin growth", "market structure", "narrative"]]
   ]
 }

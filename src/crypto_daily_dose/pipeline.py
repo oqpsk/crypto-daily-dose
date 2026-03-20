@@ -14,10 +14,10 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.json"
 API_PUSHOVER = "https://api.pushover.net/1/messages.json"
 DEFAULT_CONFIG = {
-    "user_agent": "Mozilla/5.0 OpenClaw-CryptoDailyDose/0.2",
+    "user_agent": "Mozilla/5.0 OpenClaw-CryptoDailyDose/0.3",
     "lookback_hours": 30,
-    "limits": {"rss_items_per_feed": 12, "github_items": 12},
-    "thresholds": {"top": 8, "secondary": 6},
+    "limits": {"rss_items_per_feed": 12, "github_items": 12, "discord_items": 6},
+    "thresholds": {"top": 8, "secondary": 6, "discord_min": 7, "urgent": 9},
     "paths": {
         "state_dir": "state",
         "state_file": "crypto_daily_dose.json",
@@ -26,6 +26,8 @@ DEFAULT_CONFIG = {
     },
     "rss_feeds": [],
     "github_endpoints": [],
+    "priority_topics": {},
+    "exclusions": {"hard_drop": [], "low_signal_github": [], "price_only": []},
     "categories": [],
 }
 
@@ -42,8 +44,7 @@ def deep_merge(base: dict, override: dict) -> dict:
 
 def load_config() -> dict:
     if CONFIG_PATH.exists():
-        raw = json.loads(CONFIG_PATH.read_text())
-        return deep_merge(DEFAULT_CONFIG, raw)
+        return deep_merge(DEFAULT_CONFIG, json.loads(CONFIG_PATH.read_text()))
     return DEFAULT_CONFIG
 
 
@@ -58,11 +59,26 @@ USER_AGENT = CONFIG["user_agent"]
 LOOKBACK_HOURS = int(CONFIG["lookback_hours"])
 MAX_RSS_ITEMS_PER_FEED = int(CONFIG["limits"]["rss_items_per_feed"])
 MAX_GITHUB_ITEMS = int(CONFIG["limits"]["github_items"])
+MAX_DISCORD_ITEMS = int(CONFIG["limits"]["discord_items"])
 TOP_THRESHOLD = int(CONFIG["thresholds"]["top"])
 SECONDARY_THRESHOLD = int(CONFIG["thresholds"]["secondary"])
+DISCORD_MIN_THRESHOLD = int(CONFIG["thresholds"]["discord_min"])
+URGENT_THRESHOLD = int(CONFIG["thresholds"]["urgent"])
 RSS_FEEDS = [tuple(x) for x in CONFIG["rss_feeds"]]
 GITHUB_ENDPOINTS = [tuple(x) for x in CONFIG["github_endpoints"]]
 CATEGORY_MAP = [(x[0], x[1]) for x in CONFIG["categories"]]
+PRIORITY_TOPICS = {k: [t.lower() for t in v] for k, v in CONFIG["priority_topics"].items()}
+EXCLUSIONS = {k: [t.lower() for t in v] for k, v in CONFIG["exclusions"].items()}
+
+
+CATEGORY_TO_TOPIC = {
+    "Wallet / AA / UX": "wallet_aa_ux",
+    "Protocol / EIP / Infra": "protocol_infra",
+    "Security / Risk / Compliance": "security_risk_compliance",
+    "TRON / Stablecoin / Payments": "tron_stablecoin_payments",
+    "Competitor Intelligence": "competitors",
+    "Market Structure / Narrative": "market_structure",
+}
 
 
 def now_utc() -> datetime:
@@ -97,8 +113,7 @@ def strip_html(text: str) -> str:
     text = re.sub(r"<script.*?>.*?</script>", " ", text or "", flags=re.I | re.S)
     text = re.sub(r"<style.*?>.*?</style>", " ", text, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", " ", text)
-    text = unescape(text)
-    return re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+", " ", unescape(text)).strip()
 
 
 def compact(text: str, limit: int = 240) -> str:
@@ -144,40 +159,26 @@ def title_similarity(a: str, b: str) -> float:
     return len(sa & sb) / max(len(sa), len(sb))
 
 
-def score_item(item: dict) -> dict:
-    text = f"{item.get('title','')} {item.get('content','')} {item.get('source','')}".lower()
-    relevance_terms = [
-        "ethereum", "eip", "l2", "rollup", "security", "wallet", "stablecoin", "infrastructure",
-        "validator", "bridge", "protocol", "payments", "custody", "client", "github", "erc-",
-    ]
-    impact_terms = ["launch", "upgrade", "proposal", "approved", "merged", "mainnet", "security", "exploit", "funding", "integration", "release"]
-    actionable_terms = ["what this means", "breaking", "guide", "proposal", "draft", "review", "deadline", "migration"]
+def topic_hits(text: str) -> dict:
+    hits = {}
+    for key, terms in PRIORITY_TOPICS.items():
+        matched = [t for t in terms if t in text]
+        if matched:
+            hits[key] = matched
+    return hits
 
-    relevance = min(3, sum(1 for t in relevance_terms if t in text and len(t) > 1))
-    relevance = min(3, 1 + relevance // 2) if relevance > 0 else 0
-    impact = min(3, sum(1 for t in impact_terms if t in text))
-    impact = min(3, 1 + impact // 2) if impact > 0 else 0
-    novelty = 2 if item.get("type") in {"github_pull", "github_event", "eip"} else 1
-    if item.get("hours_ago", 999) <= 12:
-        novelty = min(2, novelty + 1)
-    actionability = min(2, sum(1 for t in actionable_terms if t in text))
-    if item.get("type") in {"github_pull", "eip"}:
-        actionability = max(actionability, 1)
 
-    penalty = 0
-    if any(t in text for t in ["price", "etf inflows", "market wrap", "meme coin", "memecoin", "trading"]):
-        penalty += 3
-    if any(t in text for t in ["bitcoin price", "ether price"]):
-        penalty += 3
-
-    total = max(0, relevance + impact + novelty + actionability - penalty)
-    if total >= TOP_THRESHOLD:
-        bucket = "Top"
-    elif total >= SECONDARY_THRESHOLD:
-        bucket = "Secondary"
-    else:
-        bucket = "Discard"
-    return {"relevance": relevance, "impact": impact, "novelty": novelty, "actionability": actionability, "total": total, "bucket": bucket}
+def hard_drop_reason(item: dict, text: str) -> str | None:
+    if any(term in text for term in EXCLUSIONS.get("hard_drop", [])):
+        return "hard_drop"
+    if any(term in text for term in EXCLUSIONS.get("price_only", [])) and not any(
+        cue in text for cue in ["approval", "regulation", "upgrade", "fork", "sec", "ofac", "sanction"]
+    ):
+        return "price_only"
+    if item.get("type") in {"github_pull", "github_event", "eip"}:
+        if any(term in text for term in EXCLUSIONS.get("low_signal_github", [])):
+            return "low_signal_github"
+    return None
 
 
 def classify(item: dict) -> str:
@@ -186,8 +187,101 @@ def classify(item: dict) -> str:
         if any(term in text for term in terms):
             return name
     if item.get("type") in {"eip", "github_pull", "github_event"}:
-        return "Protocol / EIP"
-    return "Competitor"
+        return "Protocol / EIP / Infra"
+    return "Market Structure / Narrative"
+
+
+def passes_topic_gate(item: dict) -> tuple[bool, list[str]]:
+    text = f"{item.get('title','')} {item.get('content','')} {item.get('source','')}".lower()
+    hits = topic_hits(text)
+    passed = any(k in hits for k in [
+        "wallet_aa_ux",
+        "protocol_infra",
+        "security_risk_compliance",
+        "tron_stablecoin_payments",
+        "competitors",
+        "market_structure",
+    ])
+    return passed, sorted(hits.keys())
+
+
+def score_item(item: dict) -> dict:
+    text = f"{item.get('title','')} {item.get('content','')} {item.get('source','')}".lower()
+    category = item.get("category") or classify(item)
+    passed_gate, gate_hits = passes_topic_gate(item)
+    direct_relevance = 0
+    impact = 0
+    novelty = 0
+    actionability = 0
+
+    if not passed_gate:
+        return {
+            "direct_relevance": 0,
+            "impact": 0,
+            "novelty": 0,
+            "actionability": 0,
+            "total": 0,
+            "bucket": "Discard",
+            "gate_hits": gate_hits,
+        }
+
+    topic_key = CATEGORY_TO_TOPIC.get(category)
+    matched_terms = [t for t in PRIORITY_TOPICS.get(topic_key, []) if t in text]
+    direct_relevance = 3 if matched_terms else 2
+    if category in {"Wallet / AA / UX", "TRON / Stablecoin / Payments", "Security / Risk / Compliance"}:
+        direct_relevance = min(4, direct_relevance + 1)
+
+    impact_terms = [
+        "launch", "upgrade", "proposal", "approved", "merged", "mainnet", "exploit", "funding",
+        "integration", "release", "status change", "final", "review", "fork", "regulation", "sanction",
+    ]
+    impact = min(3, sum(1 for t in impact_terms if t in text))
+    if any(t in text for t in ["exploit", "hack", "drain", "critical", "regulation", "final", "mainnet", "launch"]):
+        impact = max(impact, 2)
+
+    novelty = 2 if item.get("type") in {"github_pull", "github_event", "eip", "blog"} else 1
+    if item.get("hours_ago", 999) <= 12:
+        novelty = min(3, novelty + 1)
+
+    actionable_terms = ["signing", "migration", "review", "roadmap", "wallet", "payment", "compliance", "strategy", "partnership"]
+    actionability = min(2, sum(1 for t in actionable_terms if t in text))
+    if category in {"Wallet / AA / UX", "Security / Risk / Compliance", "TRON / Stablecoin / Payments", "Competitor Intelligence"}:
+        actionability = max(actionability, 1)
+
+    total = direct_relevance + impact + novelty + actionability
+    if total >= TOP_THRESHOLD:
+        bucket = "Top"
+    elif total >= SECONDARY_THRESHOLD:
+        bucket = "Secondary"
+    else:
+        bucket = "Discard"
+
+    return {
+        "direct_relevance": direct_relevance,
+        "impact": impact,
+        "novelty": novelty,
+        "actionability": actionability,
+        "total": total,
+        "bucket": bucket,
+        "gate_hits": gate_hits,
+    }
+
+
+def urgency_reason(item: dict) -> str | None:
+    text = f"{item.get('title','')} {item.get('content','')}".lower()
+    category = item.get("category")
+    total = item.get("score", {}).get("total", 0)
+    if total < URGENT_THRESHOLD:
+        return None
+    if category == "Security / Risk / Compliance" and any(t in text for t in ["exploit", "hack", "drain", "critical", "phishing"]):
+        return "security"
+    if category == "Wallet / AA / UX" and any(t in text for t in ["launch", "signing", "eip-7702", "eip-4337", "eip-8141", "smart account"]):
+        return "wallet"
+    if category == "TRON / Stablecoin / Payments" and any(t in text for t in ["tron", "usdt", "usdc", "stablecoin", "settlement", "payment"]):
+        return "payments"
+    if category in {"Protocol / EIP / Infra", "Competitor Intelligence"} and any(t in text for t in ["launch", "mainnet", "regulation", "partnership", "strategy"]):
+        return "high_impact"
+    return None
 
 
 def parse_feed_entries(source_name: str, url: str, item_type: str, cutoff: datetime) -> list[dict]:
@@ -201,25 +295,17 @@ def parse_feed_entries(source_name: str, url: str, item_type: str, cutoff: datet
             title = (node.findtext("title") or "").strip()
             link = (node.findtext("link") or "").strip()
             desc = node.findtext("description") or node.findtext("{http://purl.org/rss/1.0/modules/content/}encoded") or ""
-            pub = node.findtext("pubDate") or node.findtext("published") or node.findtext("updated")
-            dt = parse_dt(pub)
+            dt = parse_dt(node.findtext("pubDate") or node.findtext("published") or node.findtext("updated"))
             if dt and dt < cutoff:
                 continue
             entries.append({"title": strip_html(title), "content": compact(strip_html(desc), 280), "url": link, "source": source_name, "type": item_type, "timestamp": dt.isoformat() if dt else ""})
     else:
         ns = {"a": "http://www.w3.org/2005/Atom"}
-        nodes = root.findall("a:entry", ns)
-        for node in nodes[:MAX_RSS_ITEMS_PER_FEED]:
+        for node in root.findall("a:entry", ns)[:MAX_RSS_ITEMS_PER_FEED]:
             title = (node.findtext("a:title", default="", namespaces=ns) or "").strip()
-            link = ""
-            for ln in node.findall("a:link", ns):
-                href = ln.attrib.get("href")
-                if href:
-                    link = href
-                    break
+            link = next((ln.attrib.get("href") for ln in node.findall("a:link", ns) if ln.attrib.get("href")), "")
             summary = node.findtext("a:summary", default="", namespaces=ns) or node.findtext("a:content", default="", namespaces=ns) or ""
-            pub = node.findtext("a:published", default="", namespaces=ns) or node.findtext("a:updated", default="", namespaces=ns)
-            dt = parse_dt(pub)
+            dt = parse_dt(node.findtext("a:published", default="", namespaces=ns) or node.findtext("a:updated", default="", namespaces=ns))
             if dt and dt < cutoff:
                 continue
             entries.append({"title": strip_html(title), "content": compact(strip_html(summary), 280), "url": link, "source": source_name, "type": item_type, "timestamp": dt.isoformat() if dt else ""})
@@ -292,50 +378,82 @@ def dedup(items: list[dict]) -> list[dict]:
     return out
 
 
-def enrich(items: list[dict]) -> list[dict]:
+def enrich(items: list[dict]) -> tuple[list[dict], dict]:
     enriched = []
+    dropped = {"hard_drop": 0, "topic_gate": 0, "low_signal": 0}
     now = now_utc()
     for item in items:
         dt = parse_dt(item.get("timestamp"))
         item["hours_ago"] = round((now - dt).total_seconds() / 3600, 1) if dt else 999
-        item["score"] = score_item(item)
+        text = f"{item.get('title','')} {item.get('content','')} {item.get('source','')}".lower()
+        reason = hard_drop_reason(item, text)
+        if reason:
+            dropped["low_signal" if reason in {"low_signal_github", "price_only"} else "hard_drop"] += 1
+            continue
         item["category"] = classify(item)
+        passed, gate_hits = passes_topic_gate(item)
+        if not passed:
+            dropped["topic_gate"] += 1
+            continue
+        item["score"] = score_item(item)
+        item["gate_hits"] = gate_hits
+        item["urgency"] = urgency_reason(item)
         enriched.append(item)
-    return enriched
+    return enriched, dropped
 
 
-def build_report(items: list[dict]) -> tuple[str, str]:
+def sort_key(item: dict):
+    score = item.get("score", {})
+    return (
+        score.get("direct_relevance", 0),
+        score.get("impact", 0),
+        score.get("novelty", 0),
+        score.get("actionability", 0),
+        -item.get("hours_ago", 999),
+    )
+
+
+def why_it_matters(item: dict) -> str:
+    category = item.get("category")
+    score = item.get("score", {})
+    if category == "Wallet / AA / UX":
+        return "Directly touches wallet UX, signing, or account abstraction decisions."
+    if category == "TRON / Stablecoin / Payments":
+        return "Relevant to stablecoin/payment rails and could affect product or market direction."
+    if category == "Security / Risk / Compliance":
+        return "Security/compliance changes are high-impact and often immediately actionable."
+    if category == "Competitor Intelligence":
+        return "May reveal competitor product direction, adoption strategy, or positioning."
+    if category == "Protocol / EIP / Infra":
+        return "Could affect wallet/infra roadmap if the protocol change becomes meaningful."
+    return f"High-signal infra narrative with score {score.get('total', 0)}."
+
+
+def build_report(items: list[dict]) -> tuple[str, str | None]:
     today = datetime.now().astimezone().strftime("%Y-%m-%d")
-    top_items = [x for x in items if x["score"]["bucket"] == "Top"][:6]
-    secondary = [x for x in items if x["score"]["bucket"] == "Secondary"][:8]
-    grouped = {k: [] for k, _ in CATEGORY_MAP}
-    for item in top_items + secondary:
-        grouped.setdefault(item["category"], []).append(item)
+    discord_items = [x for x in items if x["score"]["total"] >= DISCORD_MIN_THRESHOLD][:MAX_DISCORD_ITEMS]
+    urgent_items = [x for x in discord_items if x.get("urgency")]
 
-    lines = [f"# Crypto Daily Dose — {today}", "", "## Top Priority"]
-    if top_items:
-        for item in top_items:
-            lines += [
-                f"- **{item['title']}**",
-                f"  - What happened: {compact(item['content'], 180) or 'See source.'}",
-                f"  - Why it matters: score {item['score']['total']}/10 · {item['category']}",
-                f"  - Source: {item['source']} — {item['url']}",
-            ]
+    lines = [f"# Crypto Daily Dose — {today}", ""]
+    if not discord_items:
+        lines += ["Minimal report:", "- No high-value wallet / infra / payments / security items today."]
+        return "\n".join(lines) + "\n", None
+
+    for item in discord_items:
+        lines += [
+            f"## {item['category']}",
+            f"- **{item['title']}**",
+            f"  - What happened: {compact(item['content'], 180) or 'See source.'}",
+            f"  - Why it matters: {why_it_matters(item)}",
+            f"  - Source: {item['source']} — {item['url']}",
+            "",
+        ]
+
+    if urgent_items:
+        top = urgent_items[0]
+        push = f"Crypto urgent: {compact(top['title'], 90)}"
     else:
-        lines.append("- No clear top-priority crypto intel today.")
-    lines.append("")
-
-    for section in ["Wallet / Infra", "Protocol / EIP", "Security", "Payments", "Competitor"]:
-        lines.append(f"## {section}")
-        entries = grouped.get(section, [])[:3]
-        lines.extend([f"- {item['title']} ({item['source']})" for item in entries] or ["- N/A"])
-        lines.append("")
-
-    lines.append("## What matters today")
-    summary_items = (top_items + secondary)[:5]
-    lines.extend([f"- {item['category']}: {compact(item['title'], 110)}" for item in summary_items] or ["- Quiet day. Mostly low-signal or repetitive coverage."])
-
-    push = "Crypto Brief:\n" + "\n".join(f"{idx}) {compact(item['title'], 80)}" for idx, item in enumerate(top_items[:2], 1)) if top_items else "No high-priority crypto intel today."
+        push = None
     return "\n".join(lines).strip() + "\n", push
 
 
@@ -352,20 +470,23 @@ def run(send_pushover: bool = True) -> int:
     except Exception as e:
         errors.append(f"GitHub: {e}")
 
-    ranked = sorted(enrich(dedup(items)), key=lambda x: (x["score"]["total"], -x.get("hours_ago", 999)), reverse=True)
+    filtered, dropped = enrich(dedup(items))
+    ranked = sorted(filtered, key=sort_key, reverse=True)
     report, push = build_report(ranked)
+
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(report)
     save_json(STATE_FILE, {
         "lastRunAt": datetime.now().astimezone().isoformat(),
         "itemCount": len(ranked),
-        "topCount": len([x for x in ranked if x['score']['bucket'] == 'Top']),
-        "secondaryCount": len([x for x in ranked if x['score']['bucket'] == 'Secondary']),
+        "discordCount": len([x for x in ranked if x['score']['total'] >= DISCORD_MIN_THRESHOLD]),
+        "urgentCount": len([x for x in ranked if x.get('urgency')]),
+        "dropped": dropped,
         "errors": errors,
         "sample": ranked[:10],
     })
 
-    if send_pushover:
+    if send_pushover and push:
         cfg = load_json(PUSHOVER_CFG, {})
         token, user = cfg.get("app_token"), cfg.get("user_key")
         if token and user:
