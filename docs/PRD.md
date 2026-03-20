@@ -1,4 +1,4 @@
 # Crypto Daily Dose PRD
 
-Source doc is maintained in Obsidian:
-- `/Users/mini/Documents/Obsidian/NF Vault/Projects/crypto_daily_dose_prd.md`
+Canonical product notes are maintained in the author's private notes system.
+Keep this repo copy sanitized: no local machine paths, vault names, or personal workspace details.

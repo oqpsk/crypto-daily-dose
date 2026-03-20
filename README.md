@@ -19,5 +19,10 @@ Daily crypto intelligence pipeline for Discord + Pushover.
 
 ## Run
 ```bash
-PYTHONPATH=src python3 scripts/run_daily.py --no-pushover
+python3 scripts/run_daily.py --no-pushover
 ```
+
+## Local config
+- Put runtime state in `state/`
+- Keep secrets out of git
+- If you use Pushover locally, provide a local `state/pushover.json` file that is ignored by git

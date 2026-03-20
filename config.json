@@ -13,7 +13,7 @@
     "state_dir": "state",
     "state_file": "crypto_daily_dose.json",
     "output_file": "crypto_daily_dose_report.md",
-    "pushover_cfg": "/Users/mini/.openclaw/workspace-mini/state/pushover.json"
+    "pushover_cfg": "state/pushover.json"
   },
   "rss_feeds": [
     ["The Block", "https://www.theblock.co/rss.xml", "news"],

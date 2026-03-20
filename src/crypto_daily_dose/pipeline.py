@@ -22,7 +22,7 @@ DEFAULT_CONFIG = {
         "state_dir": "state",
         "state_file": "crypto_daily_dose.json",
         "output_file": "crypto_daily_dose_report.md",
-        "pushover_cfg": str(ROOT / "state" / "pushover.json"),
+        "pushover_cfg": "state/pushover.json",
     },
     "rss_feeds": [],
     "github_endpoints": [],
@@ -52,6 +52,8 @@ STATE_DIR = ROOT / CONFIG["paths"]["state_dir"]
 STATE_FILE = STATE_DIR / CONFIG["paths"]["state_file"]
 OUTPUT_FILE = STATE_DIR / CONFIG["paths"]["output_file"]
 PUSHOVER_CFG = Path(CONFIG["paths"]["pushover_cfg"])
+if not PUSHOVER_CFG.is_absolute():
+    PUSHOVER_CFG = ROOT / PUSHOVER_CFG
 USER_AGENT = CONFIG["user_agent"]
 LOOKBACK_HOURS = int(CONFIG["lookback_hours"])
 MAX_RSS_ITEMS_PER_FEED = int(CONFIG["limits"]["rss_items_per_feed"])
