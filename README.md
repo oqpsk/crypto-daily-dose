@@ -19,5 +19,5 @@ Daily crypto intelligence pipeline for Discord + Pushover.
 
 ## Run
 ```bash
-python3 scripts/run_daily.py --no-pushover
+PYTHONPATH=src python3 scripts/run_daily.py --no-pushover
 ```

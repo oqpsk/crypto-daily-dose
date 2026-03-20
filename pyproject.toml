@@ -1,0 +1,9 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crypto-daily-dose"
+version = "0.1.0"
+description = "Daily crypto intelligence pipeline for Discord + Pushover"
+requires-python = ">=3.11"
