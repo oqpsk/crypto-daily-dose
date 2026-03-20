@@ -413,20 +413,32 @@ def sort_key(item: dict):
     )
 
 
+def zh_category(category: str) -> str:
+    mapping = {
+        "Wallet / AA / UX": "钱包 / AA / 交互体验",
+        "Protocol / EIP / Infra": "协议 / EIP / 基础设施",
+        "Security / Risk / Compliance": "安全 / 风险 / 合规",
+        "TRON / Stablecoin / Payments": "TRON / 稳定币 / 支付",
+        "Competitor Intelligence": "竞品情报",
+        "Market Structure / Narrative": "市场结构 / 叙事",
+    }
+    return mapping.get(category, category)
+
+
 def why_it_matters(item: dict) -> str:
     category = item.get("category")
     score = item.get("score", {})
     if category == "Wallet / AA / UX":
-        return "Directly touches wallet UX, signing, or account abstraction decisions."
+        return "直接影响钱包交互、签名流程或账户抽象方向，可能关系到产品设计与路线图。"
     if category == "TRON / Stablecoin / Payments":
-        return "Relevant to stablecoin/payment rails and could affect product or market direction."
+        return "与稳定币/支付基础设施相关，可能影响支付路径、成本模型或市场方向。"
     if category == "Security / Risk / Compliance":
-        return "Security/compliance changes are high-impact and often immediately actionable."
+        return "安全或合规变化通常影响大，而且往往需要快速响应。"
     if category == "Competitor Intelligence":
-        return "May reveal competitor product direction, adoption strategy, or positioning."
+        return "可能揭示竞品的产品方向、增长策略或市场定位变化。"
     if category == "Protocol / EIP / Infra":
-        return "Could affect wallet/infra roadmap if the protocol change becomes meaningful."
-    return f"High-signal infra narrative with score {score.get('total', 0)}."
+        return "若该协议变化继续推进，可能影响钱包或基础设施侧的中长期规划。"
+    return f"高信号基础设施/叙事信息，当前评分 {score.get('total', 0)}。"
 
 
 def build_report(items: list[dict]) -> tuple[str, str | None]:
@@ -436,22 +448,22 @@ def build_report(items: list[dict]) -> tuple[str, str | None]:
 
     lines = [f"# Crypto Daily Dose — {today}", ""]
     if not discord_items:
-        lines += ["Minimal report:", "- No high-value wallet / infra / payments / security items today."]
+        lines += ["简报：", "- 今天没有高价值的钱包 / 基础设施 / 支付 / 安全相关情报。"]
         return "\n".join(lines) + "\n", None
 
     for item in discord_items:
         lines += [
-            f"## {item['category']}",
+            f"## {zh_category(item['category'])}",
             f"- **{item['title']}**",
-            f"  - What happened: {compact(item['content'], 180) or 'See source.'}",
-            f"  - Why it matters: {why_it_matters(item)}",
-            f"  - Source: {item['source']} — {item['url']}",
+            f"  - 发生了什么：{compact(item['content'], 180) or '见原文。'}",
+            f"  - 为什么重要：{why_it_matters(item)}",
+            f"  - 来源：{item['source']} — {item['url']}",
             "",
         ]
 
     if urgent_items:
         top = urgent_items[0]
-        push = f"Crypto urgent: {compact(top['title'], 90)}"
+        push = f"【加密情报】{compact(top['title'], 90)}"
     else:
         push = None
     return "\n".join(lines).strip() + "\n", push
@@ -490,7 +502,7 @@ def run(send_pushover: bool = True) -> int:
         cfg = load_json(PUSHOVER_CFG, {})
         token, user = cfg.get("app_token"), cfg.get("user_key")
         if token and user:
-            payload = urllib.parse.urlencode({"token": token, "user": user, "title": "Crypto Daily Dose", "message": push}).encode()
+            payload = urllib.parse.urlencode({"token": token, "user": user, "title": "加密情报", "message": push}).encode()
             req = urllib.request.Request(API_PUSHOVER, data=payload, method="POST")
             with urllib.request.urlopen(req, timeout=20) as resp:
                 parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
