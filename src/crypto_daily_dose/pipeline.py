@@ -17,6 +17,7 @@ from crypto_daily_dose.db import (
     persist_observations,
     persist_report_snapshot,
     recently_reported_keys,
+    reset_repeat_memory,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -526,11 +527,11 @@ def dedup(items: list[dict]) -> list[dict]:
     return out
 
 
-def enrich(items: list[dict]) -> tuple[list[dict], dict]:
+def enrich(items: list[dict], repeat_suppression: bool = True) -> tuple[list[dict], dict]:
     enriched = []
     dropped = {"hard_drop": 0, "topic_gate": 0, "low_signal": 0, "recent_repeat": 0}
     now = now_utc()
-    recent_event_keys = recently_reported_keys(hours=48, channel='discord')
+    recent_event_keys = recently_reported_keys(hours=48, channel='discord') if repeat_suppression else set()
     for item in items:
         dt = parse_dt(item.get("timestamp"))
         item["hours_ago"] = round((now - dt).total_seconds() / 3600, 1) if dt else 999
@@ -725,7 +726,9 @@ def build_report(items: list[dict]) -> tuple[str, str | None]:
     return "\n".join(lines).strip() + "\n", push
 
 
-def run(send_pushover: bool = True) -> int:
+def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repeat: bool = False) -> int:
+    if reset_repeat:
+        reset_repeat_memory()
     cutoff = now_utc() - timedelta(hours=LOOKBACK_HOURS)
     items, errors = [], []
     html_stats = {}
@@ -745,7 +748,7 @@ def run(send_pushover: bool = True) -> int:
     except Exception as e:
         errors.append(f"GitHub: {e}")
 
-    filtered, dropped = enrich(dedup(items))
+    filtered, dropped = enrich(dedup(items), repeat_suppression=repeat_suppression)
     ranked = sorted(filtered, key=sort_key, reverse=True)
     report, push = build_report(ranked)
 
@@ -790,4 +793,10 @@ def run(send_pushover: bool = True) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(run(send_pushover=("--no-pushover" not in sys.argv)))
+    raise SystemExit(
+        run(
+            send_pushover=("--no-pushover" not in sys.argv),
+            repeat_suppression=("--disable-repeat-suppression" not in sys.argv),
+            reset_repeat=("--reset-repeat-memory" in sys.argv),
+        )
+    )

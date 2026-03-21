@@ -417,6 +417,16 @@ def event_key_for_item(item: dict) -> str:
     return canonical_hash(f"event|{item.get('category','')}|{item.get('title','')}|{item.get('url','')}")
 
 
+def reset_repeat_memory() -> dict:
+    if not EVENT_DB.exists():
+        return {"event_reports_deleted": 0, "events_cleared": 0}
+    with connect(EVENT_DB) as conn:
+        reports_deleted = conn.execute("DELETE FROM event_reports").rowcount
+        events_cleared = conn.execute("UPDATE events SET last_reported_at = NULL").rowcount
+        conn.commit()
+    return {"event_reports_deleted": reports_deleted, "events_cleared": events_cleared}
+
+
 def persist_report_snapshot(report_date: str, channel: str, items: list[dict]) -> int:
     if not EVENT_DB.exists():
         with connect(EVENT_DB) as conn:
