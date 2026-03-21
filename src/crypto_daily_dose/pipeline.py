@@ -441,6 +441,18 @@ def why_it_matters(item: dict) -> str:
     return f"高信号基础设施/叙事信息，当前评分 {score.get('total', 0)}。"
 
 
+def push_emoji(category: str) -> str:
+    mapping = {
+        "Wallet / AA / UX": "💼",
+        "Protocol / EIP / Infra": "🧱",
+        "Security / Risk / Compliance": "🛡️",
+        "TRON / Stablecoin / Payments": "💸",
+        "Competitor Intelligence": "🧭",
+        "Market Structure / Narrative": "📊",
+    }
+    return mapping.get(category, "📌")
+
+
 def summarize_title_zh(item: dict) -> str:
     title = item.get("title", "")
     category = item.get("category")
@@ -448,36 +460,36 @@ def summarize_title_zh(item: dict) -> str:
 
     if category == "Wallet / AA / UX":
         if "eip-8141" in text:
-            return "EIP-8141 出现重要更新，涉及钱包签名与 AA 设计"
+            return "EIP-8141 影响签名AA"
         if "eip-7702" in text:
-            return "EIP-7702 有新进展，值得关注钱包签名与授权体验"
+            return "EIP-7702 有新进展"
         if "eip-4337" in text:
-            return "EIP-4337 相关进展出现，关系到账户抽象实施路径"
+            return "EIP-4337 路径更新"
         if "ledger" in text:
-            return "Ledger 有新动作，反映硬件钱包与合规化进程变化"
-        return "钱包与账户抽象方向出现值得关注的新进展"
+            return "Ledger 合规化加速"
+        return "钱包与AA方向有新进展"
 
     if category == "TRON / Stablecoin / Payments":
         if "stablecoin" in text or "稳定币" in title:
-            return "稳定币相关规则或基础设施出现关键变化"
+            return "稳定币规则出现变化"
         if "tron" in text or "trc20" in text:
-            return "TRON 支付与费率模型出现值得关注的新变化"
+            return "TRON 支付模型有变化"
         if "usdc" in text or "usdt" in text:
-            return "稳定币结算场景扩大，值得关注支付基础设施变化"
-        return "支付与稳定币基础设施出现重要新动向"
+            return "稳定币结算场景扩大"
+        return "支付基础设施有新动向"
 
     if category == "Security / Risk / Compliance":
         if any(t in text for t in ["exploit", "hack", "phishing", "drain", "critical"]):
-            return "出现高风险安全事件，需关注资产与签名风险"
-        return "监管或合规侧出现重要变化，值得及时关注"
+            return "出现高风险安全事件"
+        return "监管合规出现重要变化"
 
     if category == "Protocol / EIP / Infra":
-        return "协议与基础设施层出现重要更新，可能影响钱包或产品路线"
+        return "协议基础设施有更新"
 
     if category == "Competitor Intelligence":
-        return "竞品出现新动作，可能反映产品方向或增长策略变化"
+        return "竞品产品方向有变化"
 
-    return compact(title, 40)
+    return compact(title, 20)
 
 
 def build_report(items: list[dict]) -> tuple[str, str | None]:
@@ -501,8 +513,8 @@ def build_report(items: list[dict]) -> tuple[str, str | None]:
         ]
 
     if urgent_items:
-        top = urgent_items[0]
-        push = f"【加密情报】{summarize_title_zh(top)}"
+        selected = urgent_items[:2]
+        push = "\n".join(f"{push_emoji(item['category'])} {summarize_title_zh(item)}" for item in selected)
     else:
         push = None
     return "\n".join(lines).strip() + "\n", push
