@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 
+from crypto_daily_dose.db import SOURCE_DB, load_runtime_sources
+
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.json"
 API_PUSHOVER = "https://api.pushover.net/1/messages.json"
@@ -66,9 +68,17 @@ SECONDARY_THRESHOLD = int(CONFIG["thresholds"]["secondary"])
 DISCORD_MIN_THRESHOLD = int(CONFIG["thresholds"]["discord_min"])
 URGENT_THRESHOLD = int(CONFIG["thresholds"]["urgent"])
 MAX_HTML_LINKS_PER_SOURCE = 3
-RSS_FEEDS = [tuple(x) for x in CONFIG["rss_feeds"]]
-GITHUB_ENDPOINTS = [tuple(x) for x in CONFIG["github_endpoints"]]
-HTML_SOURCES = [tuple(x) for x in CONFIG.get("html_sources", [])]
+if SOURCE_DB.exists():
+    RUNTIME_SOURCES = load_runtime_sources()
+else:
+    RUNTIME_SOURCES = {
+        "rss_feeds": [tuple(x) for x in CONFIG["rss_feeds"]],
+        "github_endpoints": [tuple(x) for x in CONFIG["github_endpoints"]],
+        "html_sources": [tuple(x) for x in CONFIG.get("html_sources", [])],
+    }
+RSS_FEEDS = RUNTIME_SOURCES["rss_feeds"]
+GITHUB_ENDPOINTS = RUNTIME_SOURCES["github_endpoints"]
+HTML_SOURCES = RUNTIME_SOURCES["html_sources"]
 CATEGORY_MAP = [(x[0], x[1]) for x in CONFIG["categories"]]
 PRIORITY_TOPICS = {k: [t.lower() for t in v] for k, v in CONFIG["priority_topics"].items()}
 EXCLUSIONS = {k: [t.lower() for t in v] for k, v in CONFIG["exclusions"].items()}

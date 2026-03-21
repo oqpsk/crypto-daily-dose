@@ -303,6 +303,46 @@ def seed_source_registry(conn: sqlite3.Connection, config: dict) -> None:
     conn.commit()
 
 
+def list_sources(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT s.*, f.index_url, f.feed_url, f.api_url, f.path_hints_json, f.max_items, f.lookback_hours
+        FROM sources s
+        LEFT JOIN source_fetch_config f ON f.source_id = s.source_id
+        WHERE s.enabled = 1
+        ORDER BY s.tier ASC, s.priority ASC, s.name ASC
+        """
+    ).fetchall()
+
+
+def load_runtime_sources() -> dict:
+    if not SOURCE_DB.exists():
+        return {"rss_feeds": [], "github_endpoints": [], "html_sources": []}
+    with connect(SOURCE_DB) as conn:
+        rows = list_sources(conn)
+    rss_feeds, github_endpoints, html_sources = [], [], []
+    for row in rows:
+        if row["kind"] == "rss" and row["feed_url"]:
+            item_type = "blog" if row["family"] == "official_protocol" else "news"
+            if row["name"] == "EIPs":
+                item_type = "eip"
+            rss_feeds.append((row["name"], row["feed_url"], item_type))
+        elif row["kind"] == "github_api" and row["api_url"]:
+            item_type = "github_pull" if "pull" in (row["api_url"] or "") else "github_event"
+            github_endpoints.append((row["name"], row["api_url"], item_type))
+        elif row["kind"] == "html_index" and row["index_url"]:
+            path_hints = json.loads(row["path_hints_json"] or "[]")
+            item_type = "research"
+            if row["family"] == "wallet_official":
+                item_type = "wallet_blog"
+            elif row["family"] == "security":
+                item_type = "security_blog"
+            elif row["family"] == "payments":
+                item_type = "payments_blog"
+            html_sources.append((row["name"], row["index_url"], path_hints, item_type))
+    return {"rss_feeds": rss_feeds, "github_endpoints": github_endpoints, "html_sources": html_sources}
+
+
 def init_all() -> dict:
     config = load_config()
     with connect(SOURCE_DB) as source_conn:
