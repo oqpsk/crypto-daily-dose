@@ -459,6 +459,8 @@ def summarize_title_zh(item: dict) -> str:
     text = f"{title} {item.get('content','')}".lower()
 
     if category == "Wallet / AA / UX":
+        if "eip-8141" in text and "atomic" in text:
+            return "EIP-8141 新增原子批处理"
         if "eip-8141" in text:
             return "EIP-8141 影响签名AA"
         if "eip-7702" in text:
@@ -466,7 +468,7 @@ def summarize_title_zh(item: dict) -> str:
         if "eip-4337" in text:
             return "EIP-4337 路径更新"
         if "ledger" in text:
-            return "Ledger 合规化加速"
+            return "Ledger 推进 IPO 布局"
         return "钱包与AA方向有新进展"
 
     if category == "TRON / Stablecoin / Payments":
@@ -492,6 +494,43 @@ def summarize_title_zh(item: dict) -> str:
     return compact(title, 20)
 
 
+def summarize_body_zh(item: dict) -> str:
+    title = item.get("title", "")
+    text = f"{title} {item.get('content','')}".lower()
+    category = item.get("category")
+
+    if category == "Wallet / AA / UX":
+        if "eip-8141" in text and "atomic" in text:
+            return "该提案新增原子批处理能力，连续操作可作为一组回滚，关系到钱包批量操作与交互体验。"
+        if "eip-8141" in text:
+            return "该提案围绕账户抽象与签名能力调整，涉及钱包默认代码与签名方案设计。"
+        if "ledger" in text:
+            return "Ledger 正强化管理层并推进上市准备，反映硬件钱包赛道仍在加速成熟。"
+        return "该更新与钱包交互、签名流程或账户抽象路径相关。"
+
+    if category == "TRON / Stablecoin / Payments":
+        if "stablecoin" in text:
+            return "稳定币相关规则若继续推进，可能影响产品设计、收益结构与支付基础设施路径。"
+        if "usdc" in text or "usdt" in text:
+            return "稳定币正在扩展更多结算与交易场景，值得关注支付基础设施变化。"
+        if "tron" in text:
+            return "TRON 网络或费率模型变化，可能影响稳定币与跨境支付使用场景。"
+        return "支付与稳定币基础设施出现值得关注的新动向。"
+
+    if category == "Security / Risk / Compliance":
+        if any(t in text for t in ["exploit", "hack", "phishing", "drain", "critical"]):
+            return "该事件可能直接影响资产安全、签名风险或钱包风控策略。"
+        return "监管或合规变化可能影响业务边界、产品设计或风险判断。"
+
+    if category == "Protocol / EIP / Infra":
+        return "这类协议或基础设施变化，后续可能传导到钱包与产品路线图。"
+
+    if category == "Competitor Intelligence":
+        return "竞品的新动作可能透露其产品方向、增长策略或集成重点。"
+
+    return compact(item.get("content", ""), 80) or "见原文。"
+
+
 def build_report(items: list[dict]) -> tuple[str, str | None]:
     today = datetime.now().astimezone().strftime("%Y-%m-%d")
     discord_items = [x for x in items if x["score"]["total"] >= DISCORD_MIN_THRESHOLD][:MAX_DISCORD_ITEMS]
@@ -505,17 +544,18 @@ def build_report(items: list[dict]) -> tuple[str, str | None]:
     for item in discord_items:
         lines += [
             f"## {zh_category(item['category'])}",
-            f"- **{item['title']}**",
-            f"  - 发生了什么：{compact(item['content'], 180) or '见原文。'}",
+            f"- **{summarize_title_zh(item)}**",
+            f"  - 发生了什么：{summarize_body_zh(item)}",
             f"  - 为什么重要：{why_it_matters(item)}",
             f"  - 来源：{item['source']} — {item['url']}",
             "",
         ]
 
-    if urgent_items:
+    push_candidates = urgent_items + [x for x in discord_items if x not in urgent_items]
+    if push_candidates:
         selected = []
         seen_push_texts = set()
-        for item in urgent_items:
+        for item in push_candidates:
             text = summarize_title_zh(item)
             key = norm_title(text)
             if key in seen_push_texts:
