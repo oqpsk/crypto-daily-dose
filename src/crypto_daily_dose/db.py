@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -341,6 +342,109 @@ def load_runtime_sources() -> dict:
                 item_type = "payments_blog"
             html_sources.append((row["name"], row["index_url"], path_hints, item_type))
     return {"rss_feeds": rss_feeds, "github_endpoints": github_endpoints, "html_sources": html_sources}
+
+
+def canonical_hash(text: str) -> str:
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def source_id_for_name(name: str) -> str | None:
+    if not SOURCE_DB.exists():
+        return None
+    with connect(SOURCE_DB) as conn:
+        row = conn.execute("SELECT source_id FROM sources WHERE name = ? LIMIT 1", (name,)).fetchone()
+        return row[0] if row else None
+
+
+def persist_observations(items: list[dict]) -> int:
+    if not EVENT_DB.exists():
+        with connect(EVENT_DB) as conn:
+            init_event_memory(conn)
+    inserted = 0
+    observed_at = now_iso()
+    with connect(EVENT_DB) as conn:
+        for item in items:
+            raw_basis = f"{item.get('source','')}|{item.get('url','')}|{item.get('title','')}|{item.get('timestamp','')}"
+            obs_id = canonical_hash(raw_basis)
+            raw_hash = canonical_hash(f"{item.get('title','')}|{item.get('content','')}|{item.get('url','')}")
+            norm_hash = canonical_hash(f"{item.get('category','')}|{item.get('score',{}).get('total',0)}|{item.get('title','')}")
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO observations (
+                    observation_id, source_id, observed_at, title, url, content_snippet,
+                    published_at, raw_hash, normalized_hash, category, score_total, event_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    obs_id,
+                    source_id_for_name(item.get('source','')),
+                    observed_at,
+                    item.get('title',''),
+                    item.get('url',''),
+                    item.get('content',''),
+                    item.get('timestamp',''),
+                    raw_hash,
+                    norm_hash,
+                    item.get('category',''),
+                    float(item.get('score',{}).get('total',0) or 0),
+                    item.get('event_id'),
+                ),
+            )
+            inserted += 1
+        conn.commit()
+    return inserted
+
+
+def persist_report_snapshot(report_date: str, channel: str, items: list[dict]) -> int:
+    if not EVENT_DB.exists():
+        with connect(EVENT_DB) as conn:
+            init_event_memory(conn)
+    written = 0
+    now = now_iso()
+    with connect(EVENT_DB) as conn:
+        for item in items:
+            event_id = item.get('event_id') or canonical_hash(f"event|{item.get('category','')}|{item.get('title','')}")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO events (
+                    event_id, canonical_title, canonical_url, category, first_seen_at, last_seen_at,
+                    last_reported_at, last_score, status, is_active, material_update_flag, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, NULL)
+                """,
+                (
+                    event_id,
+                    item.get('title',''),
+                    item.get('url',''),
+                    item.get('category',''),
+                    now,
+                    now,
+                    now,
+                    float(item.get('score',{}).get('total',0) or 0),
+                    'observed',
+                ),
+            )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO event_reports (
+                    event_id, report_date, channel, reported_score, reported_summary, push_sent
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    report_date,
+                    channel,
+                    float(item.get('score',{}).get('total',0) or 0),
+                    item.get('title',''),
+                    1 if item.get('urgency') else 0,
+                ),
+            )
+            conn.execute(
+                "UPDATE events SET last_seen_at = ?, last_reported_at = ?, last_score = ? WHERE event_id = ?",
+                (now, now, float(item.get('score',{}).get('total',0) or 0), event_id),
+            )
+            written += 1
+        conn.commit()
+    return written
 
 
 def init_all() -> dict:

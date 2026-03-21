@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 
-from crypto_daily_dose.db import SOURCE_DB, load_runtime_sources
+from crypto_daily_dose.db import SOURCE_DB, load_runtime_sources, persist_observations, persist_report_snapshot
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.json"
@@ -738,12 +738,20 @@ def run(send_pushover: bool = True) -> int:
     report, push = build_report(ranked)
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    observations_written = persist_observations(ranked)
+    report_date = datetime.now().astimezone().strftime("%Y-%m-%d")
+    discord_items = [x for x in ranked if x['score']['total'] >= DISCORD_MIN_THRESHOLD][:MAX_DISCORD_ITEMS]
+    reports_written = persist_report_snapshot(report_date, 'discord', discord_items)
     OUTPUT_FILE.write_text(report)
     save_json(STATE_FILE, {
         "lastRunAt": datetime.now().astimezone().isoformat(),
         "itemCount": len(ranked),
         "discordCount": len([x for x in ranked if x['score']['total'] >= DISCORD_MIN_THRESHOLD]),
         "urgentCount": len([x for x in ranked if x.get('urgency')]),
+        "db": {
+            "observationsWritten": observations_written,
+            "reportRowsWritten": reports_written
+        },
         "dropped": dropped,
         "html": html_stats,
         "errors": errors,
