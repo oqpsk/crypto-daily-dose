@@ -619,11 +619,13 @@ def build_report(items: list[dict]) -> tuple[str, str | None]:
         return "\n".join(lines) + "\n", None
 
     for item in discord_items:
+        summary = summarize_body_zh(item)
+        importance = why_it_matters(item)
+        merged = summary if importance in summary else f"{summary} {importance}"
         lines += [
             f"## {zh_category(item['category'])}",
             f"- **{summarize_title_zh(item)}**",
-            f"  - 发生了什么：{summarize_body_zh(item)}",
-            f"  - 为什么重要：{why_it_matters(item)}",
+            f"  - 摘要：{merged}",
             f"  - 来源：{item['source']} — {item['url']}",
             "",
         ]
