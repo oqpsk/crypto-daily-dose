@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     },
     "rss_feeds": [],
     "github_endpoints": [],
+    "html_sources": [],
     "priority_topics": {},
     "exclusions": {"hard_drop": [], "low_signal_github": [], "price_only": []},
     "categories": [],
@@ -66,6 +67,7 @@ DISCORD_MIN_THRESHOLD = int(CONFIG["thresholds"]["discord_min"])
 URGENT_THRESHOLD = int(CONFIG["thresholds"]["urgent"])
 RSS_FEEDS = [tuple(x) for x in CONFIG["rss_feeds"]]
 GITHUB_ENDPOINTS = [tuple(x) for x in CONFIG["github_endpoints"]]
+HTML_SOURCES = [tuple(x) for x in CONFIG.get("html_sources", [])]
 CATEGORY_MAP = [(x[0], x[1]) for x in CONFIG["categories"]]
 PRIORITY_TOPICS = {k: [t.lower() for t in v] for k, v in CONFIG["priority_topics"].items()}
 EXCLUSIONS = {k: [t.lower() for t in v] for k, v in CONFIG["exclusions"].items()}
@@ -314,6 +316,81 @@ def parse_feed_entries(source_name: str, url: str, item_type: str, cutoff: datet
 
 def fetch_json(url: str):
     return json.loads(fetch(url, accept="application/json"))
+
+
+def absolute_url(base: str, href: str) -> str:
+    return urllib.parse.urljoin(base, href)
+
+
+def extract_meta(html: str, prop: str) -> str:
+    patterns = [
+        rf'<meta[^>]+property=["\']{re.escape(prop)}["\'][^>]+content=["\']([^"\']+)',
+        rf'<meta[^>]+name=["\']{re.escape(prop)}["\'][^>]+content=["\']([^"\']+)',
+        rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']{re.escape(prop)}["\']',
+        rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']{re.escape(prop)}["\']',
+    ]
+    for pat in patterns:
+        m = re.search(pat, html, flags=re.I)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def extract_links(index_url: str, html: str, path_hints: list[str], limit: int = 6) -> list[str]:
+    links = []
+    seen = set()
+    domain = urllib.parse.urlparse(index_url).netloc
+    for href in re.findall(r'href=["\']([^"\']+)["\']', html, flags=re.I):
+        full = absolute_url(index_url, href)
+        parsed = urllib.parse.urlparse(full)
+        if not parsed.scheme.startswith('http'):
+            continue
+        if parsed.netloc != domain and parsed.netloc.replace('www.', '') != domain.replace('www.', ''):
+            continue
+        if any(h in full for h in ['/tag/', '/author/', '/category/', '/cdn-cgi/']):
+            continue
+        if path_hints and not any(h in full for h in path_hints):
+            continue
+        canon = canonical_url(full)
+        if canon in seen or canon == canonical_url(index_url):
+            continue
+        seen.add(canon)
+        links.append(full)
+        if len(links) >= limit:
+            break
+    return links
+
+
+def parse_html_sources(cutoff: datetime) -> list[dict]:
+    items = []
+    for source_name, index_url, path_hints, item_type in HTML_SOURCES:
+        try:
+            index_html = fetch(index_url, accept='text/html,application/xhtml+xml')
+            article_links = extract_links(index_url, index_html, list(path_hints), limit=6)
+            for link in article_links:
+                try:
+                    html = fetch(link, accept='text/html,application/xhtml+xml')
+                except Exception:
+                    continue
+                title = extract_meta(html, 'og:title') or re.search(r'<title[^>]*>(.*?)</title>', html, flags=re.I|re.S).group(1) if re.search(r'<title[^>]*>(.*?)</title>', html, flags=re.I|re.S) else ''
+                title = strip_html(title)
+                desc = extract_meta(html, 'description') or extract_meta(html, 'og:description')
+                desc = compact(strip_html(desc), 280)
+                pub = extract_meta(html, 'article:published_time') or extract_meta(html, 'og:published_time') or extract_meta(html, 'publication_date')
+                dt = parse_dt(pub)
+                if dt and dt < cutoff:
+                    continue
+                items.append({
+                    'title': title,
+                    'content': desc,
+                    'url': link,
+                    'source': source_name,
+                    'type': item_type,
+                    'timestamp': dt.isoformat() if dt else '',
+                })
+        except Exception:
+            continue
+    return items
 
 
 def parse_github(cutoff: datetime) -> list[dict]:
@@ -578,6 +655,10 @@ def run(send_pushover: bool = True) -> int:
             items.extend(parse_feed_entries(source_name, url, item_type, cutoff))
         except Exception as e:
             errors.append(f"RSS {source_name}: {e}")
+    try:
+        items.extend(parse_html_sources(cutoff))
+    except Exception as e:
+        errors.append(f"HTML sources: {e}")
     try:
         items.extend(parse_github(cutoff))
     except Exception as e:
