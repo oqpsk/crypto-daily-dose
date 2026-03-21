@@ -513,8 +513,18 @@ def build_report(items: list[dict]) -> tuple[str, str | None]:
         ]
 
     if urgent_items:
-        selected = urgent_items[:2]
-        push = "\n".join(f"{push_emoji(item['category'])} {summarize_title_zh(item)}" for item in selected)
+        selected = []
+        seen_push_texts = set()
+        for item in urgent_items:
+            text = summarize_title_zh(item)
+            key = norm_title(text)
+            if key in seen_push_texts:
+                continue
+            seen_push_texts.add(key)
+            selected.append((item, text))
+            if len(selected) >= 2:
+                break
+        push = "\n".join(f"{push_emoji(item['category'])} {text}" for item, text in selected) if selected else None
     else:
         push = None
     return "\n".join(lines).strip() + "\n", push
