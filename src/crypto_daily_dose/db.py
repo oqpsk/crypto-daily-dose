@@ -395,6 +395,28 @@ def persist_observations(items: list[dict]) -> int:
     return inserted
 
 
+def recently_reported_keys(hours: int = 48, channel: str = 'discord') -> set[str]:
+    if not EVENT_DB.exists():
+        return set()
+    query = """
+        SELECT e.category, e.canonical_title, e.canonical_url
+        FROM event_reports r
+        JOIN events e ON e.event_id = r.event_id
+        WHERE r.channel = ?
+          AND e.last_reported_at IS NOT NULL
+          AND datetime(e.last_reported_at) >= datetime('now', ?)
+    """
+    keys = set()
+    with connect(EVENT_DB) as conn:
+        for row in conn.execute(query, (channel, f'-{hours} hours')):
+            keys.add(canonical_hash(f"event|{row['category'] or ''}|{row['canonical_title'] or ''}|{row['canonical_url'] or ''}"))
+    return keys
+
+
+def event_key_for_item(item: dict) -> str:
+    return canonical_hash(f"event|{item.get('category','')}|{item.get('title','')}|{item.get('url','')}")
+
+
 def persist_report_snapshot(report_date: str, channel: str, items: list[dict]) -> int:
     if not EVENT_DB.exists():
         with connect(EVENT_DB) as conn:
@@ -403,7 +425,7 @@ def persist_report_snapshot(report_date: str, channel: str, items: list[dict]) -
     now = now_iso()
     with connect(EVENT_DB) as conn:
         for item in items:
-            event_id = item.get('event_id') or canonical_hash(f"event|{item.get('category','')}|{item.get('title','')}")
+            event_id = item.get('event_id') or event_key_for_item(item)
             conn.execute(
                 """
                 INSERT OR IGNORE INTO events (

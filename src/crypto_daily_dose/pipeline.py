@@ -10,7 +10,14 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 
-from crypto_daily_dose.db import SOURCE_DB, load_runtime_sources, persist_observations, persist_report_snapshot
+from crypto_daily_dose.db import (
+    SOURCE_DB,
+    event_key_for_item,
+    load_runtime_sources,
+    persist_observations,
+    persist_report_snapshot,
+    recently_reported_keys,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.json"
@@ -521,8 +528,9 @@ def dedup(items: list[dict]) -> list[dict]:
 
 def enrich(items: list[dict]) -> tuple[list[dict], dict]:
     enriched = []
-    dropped = {"hard_drop": 0, "topic_gate": 0, "low_signal": 0}
+    dropped = {"hard_drop": 0, "topic_gate": 0, "low_signal": 0, "recent_repeat": 0}
     now = now_utc()
+    recent_event_keys = recently_reported_keys(hours=48, channel='discord')
     for item in items:
         dt = parse_dt(item.get("timestamp"))
         item["hours_ago"] = round((now - dt).total_seconds() / 3600, 1) if dt else 999
@@ -538,6 +546,10 @@ def enrich(items: list[dict]) -> tuple[list[dict], dict]:
             continue
         item["score"] = score_item(item)
         item["gate_hits"] = gate_hits
+        item["event_id"] = event_key_for_item(item)
+        if item["event_id"] in recent_event_keys:
+            dropped["recent_repeat"] += 1
+            continue
         item["urgency"] = urgency_reason(item)
         enriched.append(item)
     return enriched, dropped
