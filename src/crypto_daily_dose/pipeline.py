@@ -65,6 +65,7 @@ TOP_THRESHOLD = int(CONFIG["thresholds"]["top"])
 SECONDARY_THRESHOLD = int(CONFIG["thresholds"]["secondary"])
 DISCORD_MIN_THRESHOLD = int(CONFIG["thresholds"]["discord_min"])
 URGENT_THRESHOLD = int(CONFIG["thresholds"]["urgent"])
+MAX_HTML_LINKS_PER_SOURCE = 3
 RSS_FEEDS = [tuple(x) for x in CONFIG["rss_feeds"]]
 GITHUB_ENDPOINTS = [tuple(x) for x in CONFIG["github_endpoints"]]
 HTML_SOURCES = [tuple(x) for x in CONFIG.get("html_sources", [])]
@@ -193,6 +194,22 @@ def classify(item: dict) -> str:
     return "Market Structure / Narrative"
 
 
+def html_strong_topic_evidence(text: str, hits: dict) -> bool:
+    strong_terms = [
+        "exploit", "hack", "vulnerability", "phishing", "approval draining", "signature abuse",
+        "sanction", "ofac", "aml", "regulator", "sec",
+        "eip-", "erc-", "hard fork", "ethereum upgrade", "rollup", "sequencer",
+        "smart account", "account abstraction", "eip-4337", "eip-7702", "eip-8141",
+        "stablecoin", "payment rail", "cross-border payment", "settlement", "merchant",
+        "tron", "trc20", "usdt", "usdc",
+    ]
+    if any(term in text for term in strong_terms):
+        return True
+    non_competitor_hits = {k: v for k, v in hits.items() if k != "competitors"}
+    matched_terms = sum(len(v) for v in non_competitor_hits.values())
+    return matched_terms >= 2 and len(non_competitor_hits) >= 1
+
+
 def passes_topic_gate(item: dict) -> tuple[bool, list[str]]:
     text = f"{item.get('title','')} {item.get('content','')} {item.get('source','')}".lower()
     hits = topic_hits(text)
@@ -204,6 +221,8 @@ def passes_topic_gate(item: dict) -> tuple[bool, list[str]]:
         "competitors",
         "market_structure",
     ])
+    if passed and item.get("type") in {"wallet_blog", "research", "security_blog", "payments_blog"}:
+        passed = html_strong_topic_evidence(text, hits)
     return passed, sorted(hits.keys())
 
 
@@ -336,8 +355,16 @@ def extract_meta(html: str, prop: str) -> str:
     return ""
 
 
+def article_link_rank(url: str) -> tuple[int, int, int]:
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.lower()
+    articleish = 1 if re.search(r'/20\d\d/|/\d{4}/\d{2}/|[a-z0-9]+-[a-z0-9-]+', path) else 0
+    depth = path.count('/')
+    return (articleish, depth, len(path))
+
+
 def extract_links(index_url: str, html: str, path_hints: list[str], limit: int = 6) -> list[str]:
-    links = []
+    candidates = []
     seen = set()
     domain = urllib.parse.urlparse(index_url).netloc
     for href in re.findall(r'href=["\']([^"\']+)["\']', html, flags=re.I):
@@ -347,7 +374,7 @@ def extract_links(index_url: str, html: str, path_hints: list[str], limit: int =
             continue
         if parsed.netloc != domain and parsed.netloc.replace('www.', '') != domain.replace('www.', ''):
             continue
-        if any(h in full for h in ['/tag/', '/author/', '/category/', '/cdn-cgi/']):
+        if any(h in full for h in ['/tag/', '/author/', '/category/', '/cdn-cgi/', '/page/']):
             continue
         if path_hints and not any(h in full for h in path_hints):
             continue
@@ -355,42 +382,69 @@ def extract_links(index_url: str, html: str, path_hints: list[str], limit: int =
         if canon in seen or canon == canonical_url(index_url):
             continue
         seen.add(canon)
-        links.append(full)
-        if len(links) >= limit:
-            break
-    return links
+        candidates.append(full)
+    return sorted(candidates, key=article_link_rank, reverse=True)[:limit]
 
 
-def parse_html_sources(cutoff: datetime) -> list[dict]:
+def parse_html_sources(cutoff: datetime) -> tuple[list[dict], dict, list[str]]:
     items = []
+    stats = {
+        'sources': len(HTML_SOURCES),
+        'index_fetch_failed': 0,
+        'zero_link_count': 0,
+        'article_fetch_failed': 0,
+        'missing_timestamp_count': 0,
+        'stale_dropped': 0,
+        'accepted': 0,
+        'links_considered': 0,
+    }
+    errors = []
     for source_name, index_url, path_hints, item_type in HTML_SOURCES:
         try:
             index_html = fetch(index_url, accept='text/html,application/xhtml+xml')
-            article_links = extract_links(index_url, index_html, list(path_hints), limit=6)
-            for link in article_links:
-                try:
-                    html = fetch(link, accept='text/html,application/xhtml+xml')
-                except Exception:
-                    continue
-                title = extract_meta(html, 'og:title') or re.search(r'<title[^>]*>(.*?)</title>', html, flags=re.I|re.S).group(1) if re.search(r'<title[^>]*>(.*?)</title>', html, flags=re.I|re.S) else ''
-                title = strip_html(title)
-                desc = extract_meta(html, 'description') or extract_meta(html, 'og:description')
-                desc = compact(strip_html(desc), 280)
-                pub = extract_meta(html, 'article:published_time') or extract_meta(html, 'og:published_time') or extract_meta(html, 'publication_date')
-                dt = parse_dt(pub)
-                if dt and dt < cutoff:
-                    continue
-                items.append({
-                    'title': title,
-                    'content': desc,
-                    'url': link,
-                    'source': source_name,
-                    'type': item_type,
-                    'timestamp': dt.isoformat() if dt else '',
-                })
-        except Exception:
+        except Exception as e:
+            stats['index_fetch_failed'] += 1
+            errors.append(f"HTML {source_name} index fetch failed: {e}")
             continue
-    return items
+
+        article_links = extract_links(index_url, index_html, list(path_hints), limit=MAX_HTML_LINKS_PER_SOURCE)
+        stats['links_considered'] += len(article_links)
+        if not article_links:
+            stats['zero_link_count'] += 1
+            errors.append(f"HTML {source_name} extracted 0 candidate links")
+            continue
+
+        for link in article_links:
+            try:
+                html = fetch(link, accept='text/html,application/xhtml+xml')
+            except Exception as e:
+                stats['article_fetch_failed'] += 1
+                errors.append(f"HTML {source_name} article fetch failed: {link} ({e})")
+                continue
+
+            title_match = re.search(r'<title[^>]*>(.*?)</title>', html, flags=re.I | re.S)
+            title = extract_meta(html, 'og:title') or (title_match.group(1) if title_match else '')
+            title = strip_html(title)
+            desc = extract_meta(html, 'description') or extract_meta(html, 'og:description')
+            desc = compact(strip_html(desc), 280)
+            pub = extract_meta(html, 'article:published_time') or extract_meta(html, 'og:published_time') or extract_meta(html, 'publication_date')
+            dt = parse_dt(pub)
+            if not dt:
+                stats['missing_timestamp_count'] += 1
+                continue
+            if dt < cutoff:
+                stats['stale_dropped'] += 1
+                continue
+            items.append({
+                'title': title,
+                'content': desc,
+                'url': link,
+                'source': source_name,
+                'type': item_type,
+                'timestamp': dt.isoformat(),
+            })
+            stats['accepted'] += 1
+    return items, stats, errors
 
 
 def parse_github(cutoff: datetime) -> list[dict]:
@@ -652,13 +706,16 @@ def build_report(items: list[dict]) -> tuple[str, str | None]:
 def run(send_pushover: bool = True) -> int:
     cutoff = now_utc() - timedelta(hours=LOOKBACK_HOURS)
     items, errors = [], []
+    html_stats = {}
     for source_name, url, item_type in RSS_FEEDS:
         try:
             items.extend(parse_feed_entries(source_name, url, item_type, cutoff))
         except Exception as e:
             errors.append(f"RSS {source_name}: {e}")
     try:
-        items.extend(parse_html_sources(cutoff))
+        html_items, html_stats, html_errors = parse_html_sources(cutoff)
+        items.extend(html_items)
+        errors.extend(html_errors)
     except Exception as e:
         errors.append(f"HTML sources: {e}")
     try:
@@ -678,6 +735,7 @@ def run(send_pushover: bool = True) -> int:
         "discordCount": len([x for x in ranked if x['score']['total'] >= DISCORD_MIN_THRESHOLD]),
         "urgentCount": len([x for x in ranked if x.get('urgency')]),
         "dropped": dropped,
+        "html": html_stats,
         "errors": errors,
         "sample": ranked[:10],
     })

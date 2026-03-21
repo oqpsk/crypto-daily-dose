@@ -4,4 +4,5 @@ __pycache__/
 .env
 state/*.json
 state/*.md
+state/*.db
 !state/.gitkeep
