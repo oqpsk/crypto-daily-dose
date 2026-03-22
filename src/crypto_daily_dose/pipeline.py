@@ -20,6 +20,7 @@ from crypto_daily_dose.db import (
     reset_repeat_memory,
 )
 from crypto_daily_dose.llm import llm_filter_and_summarize, is_llm_available
+from crypto_daily_dose.prices import fetch_price_changes, build_price_alert_items
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.json"
@@ -204,6 +205,9 @@ def topic_hits(text: str) -> dict:
 
 
 def hard_drop_reason(item: dict, text: str) -> str | None:
+    # Price alert items are always kept
+    if item.get("type") == "price_alert":
+        return None
     if any(term in text for term in EXCLUSIONS.get("hard_drop", [])):
         return "hard_drop"
     if any(term in text for term in EXCLUSIONS.get("price_only", [])) and not any(
@@ -596,8 +600,12 @@ def enrich(items: list[dict], repeat_suppression: bool = True, use_llm: bool = F
 
     # Phase 2: topic gate (LLM or keyword)
     if use_llm and is_llm_available() and candidates:
+        # Price alerts bypass LLM (already pre-judged relevant)
+        pre_approved = [x for x in candidates if x.get("type") == "price_alert"]
+        to_filter = [x for x in candidates if x.get("type") != "price_alert"]
         # LLM mode: batch filter + summarize in one call
-        candidates = llm_filter_and_summarize(candidates)
+        llm_results = llm_filter_and_summarize(to_filter) if to_filter else []
+        candidates = pre_approved + llm_results
         for item in candidates:
             if not item.get("llm_relevant", True):
                 dropped["topic_gate"] += 1
@@ -620,6 +628,15 @@ def enrich(items: list[dict], repeat_suppression: bool = True, use_llm: bool = F
 
     # Keyword mode (V1 fallback)
     for item in candidates:
+        # Price alerts bypass keyword gate
+        if item.get("type") == "price_alert":
+            item["category"] = "价格"
+            item["gate_hits"] = []
+            item["score"] = {"direct_relevance": 3, "impact": 2, "novelty": 2, "actionability": 1, "total": DISCORD_MIN_THRESHOLD, "bucket": "Secondary", "gate_hits": []}
+            item["event_id"] = event_key_for_item(item)
+            item["urgency"] = None
+            enriched.append(item)
+            continue
         item["category"] = classify(item)
         gate_result = passes_topic_gate(item)
         passed, gate_hits = gate_result
@@ -838,6 +855,14 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
         items.extend(parse_github(cutoff))
     except Exception as e:
         errors.append(f"GitHub: {e}")
+
+    # Price monitoring: inject alert items if any asset moved ≥5%
+    try:
+        price_changes = fetch_price_changes(USER_AGENT)
+        price_items = build_price_alert_items(price_changes)
+        items.extend(price_items)
+    except Exception as e:
+        errors.append(f"Price monitor: {e}")
 
     filtered, dropped = enrich(dedup(items), repeat_suppression=repeat_suppression, use_llm=use_llm)
     ranked = sorted(filtered, key=sort_key, reverse=True)
