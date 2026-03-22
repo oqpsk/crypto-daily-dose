@@ -792,28 +792,35 @@ def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
         lines += ["简报：", "- 今天没有高价值的钱包 / 基础设施 / 支付 / 安全相关情报。"]
         return "\n".join(lines) + "\n", None, discord_items
 
+    # Group items by category to avoid repeated section headers
+    from collections import OrderedDict
+    grouped: OrderedDict[str, list] = OrderedDict()
     for item in discord_items:
-        # Prefer LLM-generated content when available
         if item.get("title_zh") and item.get("summary_zh"):
-            title_display = item["title_zh"]
-            summary_display = item["summary_zh"]
-            why_display = item.get("why_matters_zh", "")
-            merged = f"{summary_display} {why_display}".strip() if why_display else summary_display
             cat_display = item.get("llm_category") or zh_category(item.get("category", ""))
         else:
-            title_display = summarize_title_zh(item)
-            summary = summarize_body_zh(item)
-            importance = why_it_matters(item)
-            merged = summary if importance in summary else f"{summary} {importance}"
             cat_display = zh_category(item.get("category", ""))
+        grouped.setdefault(cat_display, []).append(item)
 
-        lines += [
-            f"## {cat_display}",
-            f"- **{title_display}**",
-            f"  - 摘要：{merged}",
-            f"  - 来源：{item['source']} — {item['url']}",
-            "",
-        ]
+    for cat_display, cat_items in grouped.items():
+        lines.append(f"## {cat_display}")
+        for item in cat_items:
+            if item.get("title_zh") and item.get("summary_zh"):
+                title_display = item["title_zh"]
+                summary_display = item["summary_zh"]
+                why_display = item.get("why_matters_zh", "")
+                merged = f"{summary_display} {why_display}".strip() if why_display else summary_display
+            else:
+                title_display = summarize_title_zh(item)
+                summary = summarize_body_zh(item)
+                importance = why_it_matters(item)
+                merged = summary if importance in summary else f"{summary} {importance}"
+            lines += [
+                f"- **{title_display}**",
+                f"  - 摘要：{merged}",
+                f"  - 来源：{item['source']} — {item['url']}",
+            ]
+        lines.append("")
 
     push_candidates = urgent_items + [x for x in discord_items if x.get("url") not in urgent_urls]
     if push_candidates:
