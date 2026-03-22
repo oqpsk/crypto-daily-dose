@@ -76,29 +76,61 @@ BATCH_PROMPT_TEMPLATE = """
 """
 
 
+def _test_api_key(token: str) -> bool:
+    """Quick probe to check if an API key works (not rate-limited)."""
+    payload = json.dumps({
+        "model": "claude-haiku-4-5",
+        "max_tokens": 5,
+        "messages": [{"role": "user", "content": "hi"}],
+    }).encode()
+    req = urllib.request.Request(
+        ANTHROPIC_API_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": token,
+            "anthropic-version": ANTHROPIC_VERSION,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            r.read()
+        return True
+    except Exception:
+        return False
+
+
 def _load_api_key() -> str | None:
-    """Load Anthropic API key from openclaw auth profiles."""
+    """Load a working Anthropic API key from openclaw auth profiles.
+    Tests each key and skips rate-limited ones."""
     import os
     # Try environment first
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
         return key
-    # Try openclaw agent auth profiles
+    # Collect all candidate keys from auth profiles
     candidates = [
         Path.home() / ".openclaw" / "agents" / "mini" / "agent" / "auth-profiles.json",
         Path.home() / ".openclaw" / "agents" / "main" / "agent" / "auth-profiles.json",
     ]
+    keys = []
     for path in candidates:
         if path.exists():
             try:
                 data = json.loads(path.read_text())
                 for profile in data.get("profiles", {}).values():
                     token = profile.get("token", "")
-                    if token and token.startswith("sk-ant-"):
-                        return token
+                    if token and token.startswith("sk-ant-") and token not in keys:
+                        keys.append(token)
             except Exception:
                 pass
-    return None
+    # Return first working key
+    for token in keys:
+        if _test_api_key(token):
+            return token
+    # Fall back to first available even if not tested successfully
+    return keys[0] if keys else None
 
 
 def _call_anthropic(messages: list[dict], system: str, model: str = DEFAULT_MODEL) -> str:

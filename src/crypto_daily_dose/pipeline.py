@@ -889,17 +889,26 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     })
 
     if send_pushover and push:
-        cfg = load_json(PUSHOVER_CFG, {})
-        token, user = cfg.get("app_token"), cfg.get("user_key")
-        if token and user:
-            payload = urllib.parse.urlencode({"token": token, "user": user, "title": "加密情报", "message": push}).encode()
-            req = urllib.request.Request(API_PUSHOVER, data=payload, method="POST")
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
-            if parsed.get("status") != 1:
-                errors.append(f"Pushover API error: {parsed}")
+        # Dedup: only send Pushover once per calendar day (SGT)
+        today_sgt = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+        pushover_state_file = STATE_DIR / "pushover_sent.json"
+        pushover_state = load_json(pushover_state_file, {})
+        if pushover_state.get("last_sent_date") == today_sgt:
+            errors.append("Pushover already sent today, skipping")
         else:
-            errors.append("Pushover config missing")
+            cfg = load_json(PUSHOVER_CFG, {})
+            token, user = cfg.get("app_token"), cfg.get("user_key")
+            if token and user:
+                payload = urllib.parse.urlencode({"token": token, "user": user, "title": "加密情报", "message": push}).encode()
+                req = urllib.request.Request(API_PUSHOVER, data=payload, method="POST")
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
+                if parsed.get("status") == 1:
+                    save_json(pushover_state_file, {"last_sent_date": today_sgt})
+                else:
+                    errors.append(f"Pushover API error: {parsed}")
+            else:
+                errors.append("Pushover config missing")
 
     sys.stdout.write(report)
     if errors:
