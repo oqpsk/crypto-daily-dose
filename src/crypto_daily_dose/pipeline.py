@@ -180,10 +180,23 @@ def title_similarity(a: str, b: str) -> float:
     return len(sa & sb) / max(len(sa), len(sb))
 
 
+# Short terms that are prone to substring false-positives need word-boundary matching.
+# e.g. "tron" matches inside "strong", "sec" inside "second", "aa" inside "aave".
+_WORD_BOUNDARY_TERMS = frozenset(["tron", "sec", "aa", "l2", "erc"])
+
+def _term_match(term: str, text: str) -> bool:
+    """Match term in text, using word boundaries for short ambiguous terms."""
+    if term not in text:
+        return False
+    if term in _WORD_BOUNDARY_TERMS:
+        return bool(re.search(rf'\b{re.escape(term)}\b', text))
+    return True
+
+
 def topic_hits(text: str) -> dict:
     hits = {}
     for key, terms in PRIORITY_TOPICS.items():
-        matched = [t for t in terms if t in text]
+        matched = [t for t in terms if _term_match(t, text)]
         if matched:
             hits[key] = matched
     return hits
@@ -221,7 +234,7 @@ def html_strong_topic_evidence(text: str, hits: dict) -> bool:
         "stablecoin", "payment rail", "cross-border payment", "settlement", "merchant",
         "tron", "trc20", "usdt", "usdc",
     ]
-    if any(term in text for term in strong_terms):
+    if any(_term_match(term, text) for term in strong_terms):
         return True
     non_competitor_hits = {k: v for k, v in hits.items() if k != "competitors"}
     matched_terms = sum(len(v) for v in non_competitor_hits.values())
@@ -229,8 +242,10 @@ def html_strong_topic_evidence(text: str, hits: dict) -> bool:
 
 
 def passes_topic_gate(item: dict) -> tuple[bool, list[str]]:
-    text = f"{item.get('title','')} {item.get('content','')} {item.get('source','')}".lower()
-    hits = topic_hits(text)
+    # Use content-only text for topic matching to avoid source name false-positives
+    # (e.g. "TRON Weekly" source name matching the "tron" keyword for unrelated articles)
+    content_text = f"{item.get('title','')} {item.get('content','')}".lower()
+    hits = topic_hits(content_text)
     passed = any(k in hits for k in [
         "wallet_aa_ux",
         "protocol_infra",
@@ -240,12 +255,12 @@ def passes_topic_gate(item: dict) -> tuple[bool, list[str]]:
         "market_structure",
     ])
     if passed and item.get("type") in {"wallet_blog", "research", "security_blog", "payments_blog"}:
-        passed = html_strong_topic_evidence(text, hits)
+        passed = html_strong_topic_evidence(content_text, hits)
     return passed, sorted(hits.keys())
 
 
 def score_item(item: dict, _gate_result: tuple[bool, list[str]] | None = None) -> dict:
-    text = f"{item.get('title','')} {item.get('content','')} {item.get('source','')}".lower()
+    text = f"{item.get('title','')} {item.get('content','')}".lower()
     category = item.get("category") or classify(item)
     passed_gate, gate_hits = _gate_result if _gate_result is not None else passes_topic_gate(item)
     direct_relevance = 0
@@ -657,29 +672,28 @@ def summarize_title_zh(item: dict) -> str:
             return "EIP-4337 路径更新"
         if "ledger" in text:
             return "Ledger 推进 IPO 布局"
-        return "钱包与AA方向有新进展"
 
-    if category == "TRON / Stablecoin / Payments":
+    elif category == "TRON / Stablecoin / Payments":
         if "stablecoin" in text or "稳定币" in title:
             return "稳定币规则出现变化"
-        if "tron" in text or "trc20" in text:
+        if "trc20" in text:
             return "TRON 支付模型有变化"
         if "usdc" in text or "usdt" in text:
             return "稳定币结算场景扩大"
-        return "支付基础设施有新动向"
 
-    if category == "Security / Risk / Compliance":
+    elif category == "Security / Risk / Compliance":
         if any(t in text for t in ["exploit", "hack", "phishing", "drain", "critical"]):
             return "出现高风险安全事件"
         return "监管合规出现重要变化"
 
-    if category == "Protocol / EIP / Infra":
+    elif category == "Protocol / EIP / Infra":
         return "协议基础设施有更新"
 
-    if category == "Competitor Intelligence":
+    elif category == "Competitor Intelligence":
         return "竞品产品方向有变化"
 
-    return compact(title, 20)
+    # Fallback: use original title so items remain distinguishable
+    return compact(title, 60)
 
 
 def summarize_body_zh(item: dict) -> str:
@@ -694,29 +708,28 @@ def summarize_body_zh(item: dict) -> str:
             return "该提案围绕账户抽象与签名能力调整，涉及钱包默认代码与签名方案设计。"
         if "ledger" in text:
             return "Ledger 正强化管理层并推进上市准备，反映硬件钱包赛道仍在加速成熟。"
-        return "该更新与钱包交互、签名流程或账户抽象路径相关。"
 
-    if category == "TRON / Stablecoin / Payments":
+    elif category == "TRON / Stablecoin / Payments":
         if "stablecoin" in text:
             return "稳定币相关规则若继续推进，可能影响产品设计、收益结构与支付基础设施路径。"
         if "usdc" in text or "usdt" in text:
             return "稳定币正在扩展更多结算与交易场景，值得关注支付基础设施变化。"
-        if "tron" in text:
+        if "trc20" in text or "tron network" in text or "tron energy" in text:
             return "TRON 网络或费率模型变化，可能影响稳定币与跨境支付使用场景。"
-        return "支付与稳定币基础设施出现值得关注的新动向。"
 
-    if category == "Security / Risk / Compliance":
+    elif category == "Security / Risk / Compliance":
         if any(t in text for t in ["exploit", "hack", "phishing", "drain", "critical"]):
             return "该事件可能直接影响资产安全、签名风险或钱包风控策略。"
         return "监管或合规变化可能影响业务边界、产品设计或风险判断。"
 
-    if category == "Protocol / EIP / Infra":
+    elif category == "Protocol / EIP / Infra":
         return "这类协议或基础设施变化，后续可能传导到钱包与产品路线图。"
 
-    if category == "Competitor Intelligence":
+    elif category == "Competitor Intelligence":
         return "竞品的新动作可能透露其产品方向、增长策略或集成重点。"
 
-    return compact(item.get("content", ""), 80) or "见原文。"
+    # Fallback: use original content snippet so items remain distinguishable
+    return compact(item.get("content", ""), 120) or compact(item.get("title", ""), 80) or "见原文。"
 
 
 def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
