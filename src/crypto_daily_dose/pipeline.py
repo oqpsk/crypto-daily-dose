@@ -19,6 +19,7 @@ from crypto_daily_dose.db import (
     recently_reported_keys,
     reset_repeat_memory,
 )
+from crypto_daily_dose.llm import llm_filter_and_summarize, is_llm_available
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.json"
@@ -575,11 +576,14 @@ def dedup(items: list[dict]) -> list[dict]:
     return out
 
 
-def enrich(items: list[dict], repeat_suppression: bool = True) -> tuple[list[dict], dict]:
+def enrich(items: list[dict], repeat_suppression: bool = True, use_llm: bool = False) -> tuple[list[dict], dict]:
     enriched = []
     dropped = {"hard_drop": 0, "topic_gate": 0, "low_signal": 0, "recent_repeat": 0}
     now = now_utc()
     recent_event_keys = recently_reported_keys(hours=48, channel='discord') if repeat_suppression else set()
+
+    # Phase 1: hard drop filter (always runs, fast)
+    candidates = []
     for item in items:
         dt = parse_dt(item.get("timestamp"))
         item["hours_ago"] = round((now - dt).total_seconds() / 3600, 1) if dt else 999
@@ -588,6 +592,34 @@ def enrich(items: list[dict], repeat_suppression: bool = True) -> tuple[list[dic
         if reason:
             dropped["low_signal" if reason in {"low_signal_github", "price_only"} else "hard_drop"] += 1
             continue
+        candidates.append(item)
+
+    # Phase 2: topic gate (LLM or keyword)
+    if use_llm and is_llm_available() and candidates:
+        # LLM mode: batch filter + summarize in one call
+        candidates = llm_filter_and_summarize(candidates)
+        for item in candidates:
+            if not item.get("llm_relevant", True):
+                dropped["topic_gate"] += 1
+                continue
+            item["category"] = item.get("llm_category") or classify(item)
+            item["gate_hits"] = []
+            # In LLM mode, guarantee a minimum score so relevant items pass discord threshold
+            base_score = score_item(item)
+            if base_score.get("total", 0) < DISCORD_MIN_THRESHOLD:
+                base_score["total"] = DISCORD_MIN_THRESHOLD
+                base_score["bucket"] = "Secondary"
+            item["score"] = base_score
+            item["event_id"] = event_key_for_item(item)
+            if item["event_id"] in recent_event_keys:
+                dropped["recent_repeat"] += 1
+                continue
+            item["urgency"] = urgency_reason(item)
+            enriched.append(item)
+        return enriched, dropped
+
+    # Keyword mode (V1 fallback)
+    for item in candidates:
         item["category"] = classify(item)
         gate_result = passes_topic_gate(item)
         passed, gate_hits = gate_result
@@ -744,12 +776,23 @@ def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
         return "\n".join(lines) + "\n", None, discord_items
 
     for item in discord_items:
-        summary = summarize_body_zh(item)
-        importance = why_it_matters(item)
-        merged = summary if importance in summary else f"{summary} {importance}"
+        # Prefer LLM-generated content when available
+        if item.get("title_zh") and item.get("summary_zh"):
+            title_display = item["title_zh"]
+            summary_display = item["summary_zh"]
+            why_display = item.get("why_matters_zh", "")
+            merged = f"{summary_display} {why_display}".strip() if why_display else summary_display
+            cat_display = item.get("llm_category") or zh_category(item.get("category", ""))
+        else:
+            title_display = summarize_title_zh(item)
+            summary = summarize_body_zh(item)
+            importance = why_it_matters(item)
+            merged = summary if importance in summary else f"{summary} {importance}"
+            cat_display = zh_category(item.get("category", ""))
+
         lines += [
-            f"## {zh_category(item['category'])}",
-            f"- **{summarize_title_zh(item)}**",
+            f"## {cat_display}",
+            f"- **{title_display}**",
             f"  - 摘要：{merged}",
             f"  - 来源：{item['source']} — {item['url']}",
             "",
@@ -760,7 +803,7 @@ def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
         selected = []
         seen_push_texts = set()
         for item in push_candidates:
-            text = summarize_title_zh(item)
+            text = item.get("title_zh") or summarize_title_zh(item)
             key = norm_title(text)
             if key in seen_push_texts:
                 continue
@@ -774,7 +817,7 @@ def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
     return "\n".join(lines).strip() + "\n", push, discord_items
 
 
-def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repeat: bool = False) -> int:
+def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repeat: bool = False, use_llm: bool = False) -> int:
     if reset_repeat:
         reset_repeat_memory()
     cutoff = now_utc() - timedelta(hours=LOOKBACK_HOURS)
@@ -796,7 +839,7 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     except Exception as e:
         errors.append(f"GitHub: {e}")
 
-    filtered, dropped = enrich(dedup(items), repeat_suppression=repeat_suppression)
+    filtered, dropped = enrich(dedup(items), repeat_suppression=repeat_suppression, use_llm=use_llm)
     ranked = sorted(filtered, key=sort_key, reverse=True)
     report, push, discord_items = build_report(ranked)
 
@@ -845,5 +888,6 @@ if __name__ == "__main__":
             send_pushover=("--no-pushover" not in sys.argv),
             repeat_suppression=("--disable-repeat-suppression" not in sys.argv),
             reset_repeat=("--reset-repeat-memory" in sys.argv),
+            use_llm=("--use-llm" in sys.argv),
         )
     )
