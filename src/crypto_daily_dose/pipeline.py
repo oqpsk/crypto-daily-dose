@@ -244,10 +244,10 @@ def passes_topic_gate(item: dict) -> tuple[bool, list[str]]:
     return passed, sorted(hits.keys())
 
 
-def score_item(item: dict) -> dict:
+def score_item(item: dict, _gate_result: tuple[bool, list[str]] | None = None) -> dict:
     text = f"{item.get('title','')} {item.get('content','')} {item.get('source','')}".lower()
     category = item.get("category") or classify(item)
-    passed_gate, gate_hits = passes_topic_gate(item)
+    passed_gate, gate_hits = _gate_result if _gate_result is not None else passes_topic_gate(item)
     direct_relevance = 0
     impact = 0
     novelty = 0
@@ -385,6 +385,7 @@ def extract_links(index_url: str, html: str, path_hints: list[str], limit: int =
     candidates = []
     seen = set()
     domain = urllib.parse.urlparse(index_url).netloc
+    canon_index = canonical_url(index_url)  # computed once outside loop
     for href in re.findall(r'href=["\']([^"\']+)["\']', html, flags=re.I):
         full = absolute_url(index_url, href)
         parsed = urllib.parse.urlparse(full)
@@ -397,7 +398,7 @@ def extract_links(index_url: str, html: str, path_hints: list[str], limit: int =
         if path_hints and not any(h in full for h in path_hints):
             continue
         canon = canonical_url(full)
-        if canon in seen or canon == canonical_url(index_url):
+        if canon in seen or canon == canon_index:
             continue
         seen.add(canon)
         candidates.append(full)
@@ -504,26 +505,58 @@ def parse_github(cutoff: datetime) -> list[dict]:
     return items
 
 
+def _source_pref(item: dict) -> int:
+    return 1 if any(k in item.get("source", "") for k in ["Ethereum", "EIPs", "GitHub"]) else 0
+
+
 def dedup(items: list[dict]) -> list[dict]:
-    out = []
+    # url_index: canonical_url -> index in out_list (for O(1) lookup)
+    # title_index: list of (norm_title_tokens_set, index) for similarity scan
+    out: list[dict] = []
+    url_index: dict[str, int] = {}
+    title_tokens: list[set] = []
+
     for item in sorted(items, key=lambda x: x.get("timestamp", ""), reverse=True):
-        drop = False
         u = canonical_url(item.get("url", ""))
-        for kept in list(out):
-            ku = canonical_url(kept.get("url", ""))
-            if u and ku and u == ku:
-                drop = True
+        tokens = set(norm_title(item.get("title", "")).split())
+
+        # O(1) URL exact match
+        if u and u in url_index:
+            continue
+
+        # Title similarity scan (still O(n) but only for titles, no list.remove)
+        replaced_idx = None
+        drop = False
+        for idx, kept_tokens in enumerate(title_tokens):
+            if not tokens or not kept_tokens:
+                continue
+            sim = len(tokens & kept_tokens) / max(len(tokens), len(kept_tokens))
+            if sim >= 0.8:
+                kept = out[idx]
+                if _source_pref(item) > _source_pref(kept):
+                    replaced_idx = idx
+                else:
+                    drop = True
                 break
-            if title_similarity(item.get("title", ""), kept.get("title", "")) >= 0.8:
-                preferred = 1 if any(k in kept.get("source", "") for k in ["Ethereum", "EIPs", "GitHub"]) else 0
-                current_pref = 1 if any(k in item.get("source", "") for k in ["Ethereum", "EIPs", "GitHub"]) else 0
-                if current_pref > preferred:
-                    out.remove(kept)
-                    break
-                drop = True
-                break
-        if not drop:
+
+        if drop:
+            continue
+
+        if replaced_idx is not None:
+            old = out[replaced_idx]
+            old_u = canonical_url(old.get("url", ""))
+            if old_u in url_index:
+                del url_index[old_u]
+            out[replaced_idx] = item
+            title_tokens[replaced_idx] = tokens
+            if u:
+                url_index[u] = replaced_idx
+        else:
+            if u:
+                url_index[u] = len(out)
+            title_tokens.append(tokens)
             out.append(item)
+
     return out
 
 
@@ -541,11 +574,12 @@ def enrich(items: list[dict], repeat_suppression: bool = True) -> tuple[list[dic
             dropped["low_signal" if reason in {"low_signal_github", "price_only"} else "hard_drop"] += 1
             continue
         item["category"] = classify(item)
-        passed, gate_hits = passes_topic_gate(item)
+        gate_result = passes_topic_gate(item)
+        passed, gate_hits = gate_result
         if not passed:
             dropped["topic_gate"] += 1
             continue
-        item["score"] = score_item(item)
+        item["score"] = score_item(item, _gate_result=gate_result)
         item["gate_hits"] = gate_hits
         item["event_id"] = event_key_for_item(item)
         if item["event_id"] in recent_event_keys:
@@ -685,15 +719,16 @@ def summarize_body_zh(item: dict) -> str:
     return compact(item.get("content", ""), 80) or "见原文。"
 
 
-def build_report(items: list[dict]) -> tuple[str, str | None]:
+def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
     today = datetime.now().astimezone().strftime("%Y-%m-%d")
     discord_items = [x for x in items if x["score"]["total"] >= DISCORD_MIN_THRESHOLD][:MAX_DISCORD_ITEMS]
     urgent_items = [x for x in discord_items if x.get("urgency")]
+    urgent_urls = {x.get("url") for x in urgent_items}  # O(1) membership test
 
     lines = [f"# Crypto Daily Dose — {today}", ""]
     if not discord_items:
         lines += ["简报：", "- 今天没有高价值的钱包 / 基础设施 / 支付 / 安全相关情报。"]
-        return "\n".join(lines) + "\n", None
+        return "\n".join(lines) + "\n", None, discord_items
 
     for item in discord_items:
         summary = summarize_body_zh(item)
@@ -707,7 +742,7 @@ def build_report(items: list[dict]) -> tuple[str, str | None]:
             "",
         ]
 
-    push_candidates = urgent_items + [x for x in discord_items if x not in urgent_items]
+    push_candidates = urgent_items + [x for x in discord_items if x.get("url") not in urgent_urls]
     if push_candidates:
         selected = []
         seen_push_texts = set()
@@ -723,7 +758,7 @@ def build_report(items: list[dict]) -> tuple[str, str | None]:
         push = "\n".join(f"{push_emoji(item['category'])} {text}" for item, text in selected) if selected else None
     else:
         push = None
-    return "\n".join(lines).strip() + "\n", push
+    return "\n".join(lines).strip() + "\n", push, discord_items
 
 
 def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repeat: bool = False) -> int:
@@ -750,18 +785,17 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
 
     filtered, dropped = enrich(dedup(items), repeat_suppression=repeat_suppression)
     ranked = sorted(filtered, key=sort_key, reverse=True)
-    report, push = build_report(ranked)
+    report, push, discord_items = build_report(ranked)
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     observations_written = persist_observations(ranked)
     report_date = datetime.now().astimezone().strftime("%Y-%m-%d")
-    discord_items = [x for x in ranked if x['score']['total'] >= DISCORD_MIN_THRESHOLD][:MAX_DISCORD_ITEMS]
     reports_written = persist_report_snapshot(report_date, 'discord', discord_items)
     OUTPUT_FILE.write_text(report)
     save_json(STATE_FILE, {
         "lastRunAt": datetime.now().astimezone().isoformat(),
         "itemCount": len(ranked),
-        "discordCount": len([x for x in ranked if x['score']['total'] >= DISCORD_MIN_THRESHOLD]),
+        "discordCount": len(discord_items),
         "urgentCount": len([x for x in ranked if x.get('urgency')]),
         "db": {
             "observationsWritten": observations_written,
