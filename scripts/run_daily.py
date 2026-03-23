@@ -2,14 +2,22 @@
 """
 Wrapper script for the crypto-daily-dose pipeline.
 
-Auto-reset behaviour:
-  On the first run of each calendar day (Asia/Singapore), the repeat-suppression
-  memory is automatically cleared so that today's news always appears fresh.
-  Subsequent runs on the same day keep the dedup state intact to avoid re-sending.
+Two-report mode:
+  --window morning    02:28 SGT run, covers past 16h (previous afternoon/evening + overnight)
+  --window afternoon  14:28 SGT run, covers past 12h (morning news)
 
-  The "first run today" check is based on the `last_reset_date` key stored in
-  state/run_daily_state.json.  Pass --force-reset to override, or --no-reset to
-  skip the auto-reset unconditionally.
+  Each window has its own reset state, so they don't interfere with each other.
+  The event_memory 48h dedup prevents the same story from appearing in both reports.
+
+Auto-reset behaviour:
+  On the first run of each calendar day per window, repeat-suppression memory is
+  reset so content appears fresh. Subsequent runs in the same window keep dedup state.
+
+Manual flags:
+  --force-reset    Reset regardless of date/window
+  --no-reset       Skip reset unconditionally
+  --no-pushover    Skip Pushover notification
+  --use-llm        Enable LLM filter + summarization
 """
 from pathlib import Path
 import datetime
@@ -22,6 +30,12 @@ ROOT = Path(__file__).resolve().parents[1]
 STATE_DIR = ROOT / "state"
 RUN_STATE_FILE = STATE_DIR / "run_daily_state.json"
 TZ_SGT = datetime.timezone(datetime.timedelta(hours=8))
+
+# Window definitions: (lookback_hours, label)
+WINDOWS = {
+    "morning": 16,    # 02:28 SGT: covers prev 16h
+    "afternoon": 12,  # 14:28 SGT: covers prev 12h
+}
 
 
 def today_sgt() -> str:
@@ -42,28 +56,51 @@ def save_run_state(state: dict) -> None:
     RUN_STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
-def should_auto_reset(force: bool, skip: bool) -> bool:
+def should_auto_reset(force: bool, skip: bool, window: str) -> bool:
     if skip:
         return False
     if force:
         return True
     state = load_run_state()
-    return state.get("last_reset_date") != today_sgt()
+    key = f"last_reset_date_{window}"
+    return state.get(key) != today_sgt()
 
 
 def main() -> int:
     force_reset = "--force-reset" in sys.argv
     no_reset = "--no-reset" in sys.argv
-    # Strip our custom flags before passing to pipeline
-    passthrough = [a for a in sys.argv[1:] if a not in ("--force-reset", "--no-reset")]
-    # --use-llm passes through to pipeline directly
 
-    do_reset = should_auto_reset(force=force_reset, skip=no_reset)
+    # Parse window flag
+    window = "afternoon"  # default
+    for i, arg in enumerate(sys.argv[1:]):
+        if arg == "--window" and i + 1 < len(sys.argv) - 1:
+            window = sys.argv[i + 2]
+            break
+
+    # Strip our custom flags before passing to pipeline
+    custom_flags = {"--force-reset", "--no-reset"}
+    passthrough = []
+    skip_next = False
+    for arg in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--window":
+            skip_next = True
+            continue
+        if arg not in custom_flags:
+            passthrough.append(arg)
+
+    do_reset = should_auto_reset(force=force_reset, skip=no_reset, window=window)
 
     if do_reset:
-        print(f"[run_daily] First run today ({today_sgt()}) — auto-resetting repeat memory.", flush=True)
+        print(f"[run_daily] First {window} run today ({today_sgt()}) — auto-resetting repeat memory.", flush=True)
         passthrough = [a for a in passthrough if a != "--reset-repeat-memory"]
         passthrough.append("--reset-repeat-memory")
+
+    # Override lookback hours for window-specific coverage
+    if window in WINDOWS and "--lookback" not in " ".join(passthrough):
+        passthrough += ["--lookback", str(WINDOWS[window])]
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src") + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -72,9 +109,9 @@ def main() -> int:
 
     if proc.returncode == 0 and do_reset:
         state = load_run_state()
-        state["last_reset_date"] = today_sgt()
+        state[f"last_reset_date_{window}"] = today_sgt()
         save_run_state(state)
-        print(f"[run_daily] Reset state saved for {today_sgt()}.", flush=True)
+        print(f"[run_daily] Reset state saved for {window} {today_sgt()}.", flush=True)
 
     return proc.returncode
 

@@ -951,10 +951,11 @@ def check_and_build_cookie_alert() -> str | None:
     )
 
 
-def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repeat: bool = False, use_llm: bool = False) -> int:
+def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repeat: bool = False, use_llm: bool = False, lookback_hours: int | None = None) -> int:
     if reset_repeat:
         reset_repeat_memory()
-    cutoff = now_utc() - timedelta(hours=LOOKBACK_HOURS)
+    effective_lookback = lookback_hours if lookback_hours is not None else LOOKBACK_HOURS
+    cutoff = now_utc() - timedelta(hours=effective_lookback)
     items, errors = [], []
     html_stats = {}
     for source_name, url, item_type in RSS_FEEDS:
@@ -1125,5 +1126,6 @@ if __name__ == "__main__":
             repeat_suppression=("--disable-repeat-suppression" not in sys.argv),
             reset_repeat=("--reset-repeat-memory" in sys.argv),
             use_llm=("--use-llm" in sys.argv),
+            lookback_hours=int(sys.argv[sys.argv.index("--lookback") + 1]) if "--lookback" in sys.argv else None,
         )
     )
