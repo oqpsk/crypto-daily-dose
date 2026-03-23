@@ -1088,9 +1088,22 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
             quality_assessment = generate_quality_assessment(report)
             twitter_count = sum(1 for x in discord_items if x.get("type") == "tweet")
             rss_count = len(discord_items) - twitter_count
+            # Normalize category names to Chinese for consistent quality report
+            _cat_map = {
+                "Wallet / AA / UX": "钱包/AA",
+                "Protocol / EIP / Infra": "协议",
+                "Security / Risk / Compliance": "安全",
+                "TRON / Stablecoin / Payments": "TRON/稳定币",
+                "Competitor Intelligence": "竞品情报",
+                "Market Structure / Narrative": "市场/叙事",
+            }
+            def _normalize_cat(c: str) -> str:
+                return _cat_map.get(c, c) if c else "未分类"
+
             category_counts: dict[str, int] = {}
             for item in discord_items:
-                cat = item.get("llm_category") or item.get("category", "未分类")
+                raw = item.get("llm_category") or item.get("category", "未分类")
+                cat = _normalize_cat(raw)
                 category_counts[cat] = category_counts.get(cat, 0) + 1
             quality_report = {
                 "date": report_date,
