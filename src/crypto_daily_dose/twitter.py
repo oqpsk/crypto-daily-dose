@@ -49,6 +49,14 @@ TRACKED_ACCOUNTS = [
     # Chinese media
     "WuBlockchain",
     "BitpushNews",
+    "CoinTelegraph_CN",
+    # Regulatory / Institutional
+    "HesterPeirce",
+    "BrianQuintenz",
+    # Ethereum Research
+    "dannyryan",
+    # Institutional / Market
+    "saylor",
 ]
 
 MAX_TWEETS_PER_ACCOUNT = 3
