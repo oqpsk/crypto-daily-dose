@@ -6,3 +6,4 @@ state/*.json
 state/*.md
 state/*.db
 !state/.gitkeep
+state/x_cookies.json

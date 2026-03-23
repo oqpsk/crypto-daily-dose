@@ -21,6 +21,7 @@ from crypto_daily_dose.db import (
 )
 from crypto_daily_dose.llm import llm_filter_and_summarize, is_llm_available
 from crypto_daily_dose.prices import fetch_price_changes, build_price_alert_items
+from crypto_daily_dose.twitter import fetch_tweets as fetch_tweets_x, is_available as twitter_available
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.json"
@@ -870,6 +871,15 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
         items.extend(price_items)
     except Exception as e:
         errors.append(f"Price monitor: {e}")
+
+    # X/Twitter: fetch recent tweets from tracked accounts
+    if twitter_available():
+        try:
+            tweet_items, tweet_errors = fetch_tweets_x(cutoff)
+            items.extend(tweet_items)
+            errors.extend(tweet_errors)
+        except Exception as e:
+            errors.append(f"X/Twitter: {e}")
 
     filtered, dropped = enrich(dedup(items), repeat_suppression=repeat_suppression, use_llm=use_llm)
     ranked = sorted(filtered, key=sort_key, reverse=True)
