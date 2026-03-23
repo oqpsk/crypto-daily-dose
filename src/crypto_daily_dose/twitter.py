@@ -267,3 +267,33 @@ def is_available() -> bool:
             return False
     cookies = load_cookies()
     return cookies_valid(cookies)
+
+
+def check_cookie_expiry() -> int | None:
+    """
+    Check how many days until X cookies expire.
+    Returns days remaining (0 = expired), or None if can't determine.
+    Reads expiry from Edge Cookies DB (expires_utc is microseconds since 1601-01-01).
+    """
+    if not EDGE_COOKIES_DB.exists():
+        return None
+    try:
+        tmp = Path(tempfile.mktemp(suffix=".db"))
+        shutil.copy2(EDGE_COOKIES_DB, tmp)
+        conn = sqlite3.connect(tmp)
+        # Get the auth_token cookie's expiry
+        row = conn.execute(
+            "SELECT expires_utc FROM cookies WHERE name='auth_token' AND host_key LIKE '%x.com%' LIMIT 1"
+        ).fetchone()
+        conn.close()
+        tmp.unlink()
+        if not row or not row[0]:
+            return None
+        # Chromium epoch: microseconds since 1601-01-01
+        chromium_epoch_offset = 11644473600  # seconds between 1601-01-01 and 1970-01-01
+        expires_unix = row[0] / 1_000_000 - chromium_epoch_offset
+        now_unix = datetime.now(timezone.utc).timestamp()
+        days_left = int((expires_unix - now_unix) / 86400)
+        return max(0, days_left)
+    except Exception:
+        return None

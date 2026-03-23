@@ -25,7 +25,7 @@ from crypto_daily_dose.db import (
 )
 from crypto_daily_dose.llm import llm_filter_and_summarize, is_llm_available, check_material_update
 from crypto_daily_dose.prices import fetch_price_changes, build_price_alert_items
-from crypto_daily_dose.twitter import fetch_tweets as fetch_tweets_x, is_available as twitter_available
+from crypto_daily_dose.twitter import fetch_tweets as fetch_tweets_x, is_available as twitter_available, check_cookie_expiry
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.json"
@@ -585,6 +585,71 @@ def dedup(items: list[dict]) -> list[dict]:
     return out
 
 
+def dedup_tweets(items: list[dict]) -> list[dict]:
+    """
+    Merge X/Twitter items that describe the same event across multiple accounts.
+    Uses title similarity (threshold 0.4) since tweets are short.
+    Keeps the item with the longest content; merges source attribution.
+    Non-tweet items are returned unchanged.
+    """
+    tweets = [x for x in items if x.get("type") == "tweet"]
+    non_tweets = [x for x in items if x.get("type") != "tweet"]
+
+    if len(tweets) <= 1:
+        return items
+
+    clusters: list[list[dict]] = []
+    assigned = [False] * len(tweets)
+
+    for i, item in enumerate(tweets):
+        if assigned[i]:
+            continue
+        cluster = [item]
+        assigned[i] = True
+        # Use title + content for better tweet matching (tweets have short/varied titles)
+        text_i = f"{item.get('title','')} {item.get('content','')}".lower()
+        tokens_i = set(norm_title(text_i).split())
+        for j, other in enumerate(tweets):
+            if assigned[j] or i == j:
+                continue
+            text_j = f"{other.get('title','')} {other.get('content','')}".lower()
+            tokens_j = set(norm_title(text_j).split())
+            if not tokens_i or not tokens_j:
+                continue
+            common = tokens_i & tokens_j
+            # Filter out stop words for matching
+            stop = {'the','a','an','is','are','was','were','be','been','has','have','had',
+                    'will','would','could','should','may','might','in','on','at','to','for',
+                    'of','and','or','but','with','by','from','as','it','this','that','its'}
+            meaningful_common = common - stop
+            # Merge if 3+ meaningful shared tokens (captures same-event tweets with different wording)
+            if len(meaningful_common) >= 3:
+                cluster.append(other)
+                assigned[j] = True
+        clusters.append(cluster)
+
+    merged = []
+    for cluster in clusters:
+        if len(cluster) == 1:
+            merged.append(cluster[0])
+            continue
+        # Keep item with longest content, merge source attribution
+        best = max(cluster, key=lambda x: len(x.get("content", "") or ""))
+        authors = []
+        seen_authors = set()
+        for c in cluster:
+            author = c.get("author", "")
+            if author and author not in seen_authors:
+                authors.append(f"@{author}")
+                seen_authors.add(author)
+        if len(authors) > 1:
+            best = dict(best)
+            best["source"] = f"X/{', '.join(authors)}"
+        merged.append(best)
+
+    return non_tweets + merged
+
+
 def enrich(items: list[dict], repeat_suppression: bool = True, use_llm: bool = False) -> tuple[list[dict], dict]:
     enriched = []
     dropped = {"hard_drop": 0, "topic_gate": 0, "low_signal": 0, "recent_repeat": 0}
@@ -851,6 +916,32 @@ def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
     return "\n".join(lines).strip() + "\n", push, discord_items
 
 
+COOKIE_ALERT_STATE_FILE = STATE_DIR / "cookie_alert_sent.json"
+COOKIE_ALERT_DAYS_THRESHOLD = 7
+
+
+def check_and_build_cookie_alert() -> str | None:
+    """
+    Check X cookie expiry. If ≤7 days, return alert message string (once per day).
+    Returns None if no alert needed or already sent today.
+    """
+    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    state = load_json(COOKIE_ALERT_STATE_FILE, {})
+    if state.get("last_alert_date") == today:
+        return None
+    try:
+        days_left = check_cookie_expiry()
+    except Exception:
+        return None
+    if days_left is None or days_left > COOKIE_ALERT_DAYS_THRESHOLD:
+        return None
+    save_json(COOKIE_ALERT_STATE_FILE, {"last_alert_date": today})
+    return (
+        f"⚠️ **X/Twitter cookies 将在 {days_left} 天后过期**\n"
+        f"请运行：`cd ~/.openclaw/workspace-mini/crypto-daily-dose && python3 scripts/refresh_x_cookies.py`"
+    )
+
+
 def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repeat: bool = False, use_llm: bool = False) -> int:
     if reset_repeat:
         reset_repeat_memory()
@@ -889,6 +980,11 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
             errors.extend(tweet_errors)
         except Exception as e:
             errors.append(f"X/Twitter: {e}")
+        # Cookie expiry check — if ≤7 days, inject as COOKIE_ALERT error
+        # The cron agent will see this in WARNINGS and can route to #📋产品讨论
+        cookie_alert = check_and_build_cookie_alert()
+        if cookie_alert:
+            errors.append(f"COOKIE_EXPIRY_ALERT: {cookie_alert}")
 
     # Archive stale tracked events (no updates in 30 days)
     archive_stale_tracked_events(max_days=30)
@@ -925,7 +1021,7 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     # Add tracked update items to the pool
     items = items + tracked_update_items
 
-    filtered, dropped = enrich(dedup(items), repeat_suppression=repeat_suppression, use_llm=use_llm)
+    filtered, dropped = enrich(dedup_tweets(dedup(items)), repeat_suppression=repeat_suppression, use_llm=use_llm)
     ranked = sorted(filtered, key=sort_key, reverse=True)
     report, push, discord_items = build_report(ranked)
 
