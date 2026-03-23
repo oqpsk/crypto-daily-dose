@@ -46,6 +46,9 @@ TRACKED_ACCOUNTS = [
     "paradigm",
     "a16zcrypto",
     "MessariCrypto",
+    # Chinese media
+    "WuBlockchain",
+    "BitpushNews",
 ]
 
 MAX_TWEETS_PER_ACCOUNT = 3
