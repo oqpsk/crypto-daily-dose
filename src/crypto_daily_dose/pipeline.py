@@ -18,8 +18,12 @@ from crypto_daily_dose.db import (
     persist_report_snapshot,
     recently_reported_keys,
     reset_repeat_memory,
+    get_active_tracked_events,
+    start_tracking,
+    update_tracking_check,
+    archive_stale_tracked_events,
 )
-from crypto_daily_dose.llm import llm_filter_and_summarize, is_llm_available
+from crypto_daily_dose.llm import llm_filter_and_summarize, is_llm_available, check_material_update
 from crypto_daily_dose.prices import fetch_price_changes, build_price_alert_items
 from crypto_daily_dose.twitter import fetch_tweets as fetch_tweets_x, is_available as twitter_available
 
@@ -624,6 +628,9 @@ def enrich(items: list[dict], repeat_suppression: bool = True, use_llm: bool = F
                 dropped["recent_repeat"] += 1
                 continue
             item["urgency"] = urgency_reason(item)
+            # Start tracking if LLM flagged it
+            if item.get("llm_track") and item.get("llm_track_reason"):
+                start_tracking(item["event_id"], item["llm_track_reason"])
             enriched.append(item)
         return enriched, dropped
 
@@ -816,8 +823,10 @@ def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
                 summary = summarize_body_zh(item)
                 importance = why_it_matters(item)
                 merged = summary if importance in summary else f"{summary} {importance}"
+            # Add tracking label if this is a material update
+            tracking_prefix = "📌 **[事件追踪]** " if item.get("is_tracked_update") else ""
             lines += [
-                f"- **{title_display}**",
+                f"- {tracking_prefix}**{title_display}**",
                 f"  - 摘要：{merged}",
                 f"  - 来源：{item['source']} — {item['url']}",
             ]
@@ -880,6 +889,41 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
             errors.extend(tweet_errors)
         except Exception as e:
             errors.append(f"X/Twitter: {e}")
+
+    # Archive stale tracked events (no updates in 30 days)
+    archive_stale_tracked_events(max_days=30)
+
+    # Tracking check: for each active tracked event, check if new items contain material updates
+    tracked_update_items = []
+    if use_llm and is_llm_available():
+        active_tracked = get_active_tracked_events()
+        if active_tracked:
+            deduped_for_tracking = dedup(list(items))  # Don't modify original
+            for tracked_event in active_tracked:
+                for candidate in deduped_for_tracking:
+                    # Skip if candidate is the event itself (same URL)
+                    if canonical_url(candidate.get("url", "")) == canonical_url(tracked_event.get("canonical_url", "")):
+                        continue
+                    # Quick text relevance check before LLM call
+                    tracked_keywords = set(tracked_event.get("canonical_title", "").lower().split())
+                    candidate_text = f"{candidate.get('title','')} {candidate.get('content','')}".lower()
+                    keyword_overlap = sum(1 for kw in tracked_keywords if len(kw) > 4 and kw in candidate_text)
+                    if keyword_overlap < 2:
+                        continue
+                    # LLM material update check
+                    is_update, reason = check_material_update(tracked_event, candidate)
+                    if is_update:
+                        update_tracking_check(tracked_event["event_id"], had_update=True)
+                        # Clone item with tracking label
+                        update_item = dict(candidate)
+                        update_item["is_tracked_update"] = True
+                        update_item["tracked_event_title"] = tracked_event.get("canonical_title", "")
+                        update_item["tracked_update_reason"] = reason
+                        tracked_update_items.append(update_item)
+                        break  # One update per tracked event per run
+
+    # Add tracked update items to the pool
+    items = items + tracked_update_items
 
     filtered, dropped = enrich(dedup(items), repeat_suppression=repeat_suppression, use_llm=use_llm)
     ranked = sorted(filtered, key=sort_key, reverse=True)

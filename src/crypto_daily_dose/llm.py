@@ -60,6 +60,8 @@ BATCH_PROMPT_TEMPLATE = """
   {{
     "index": 0,
     "relevant": true,
+    "track": false,
+    "track_reason": "",
     "title_zh": "中文标题（20字以内）",
     "summary_zh": "发生了什么（1-2句话）",
     "why_matters_zh": "为什么重要（1句话）",
@@ -68,6 +70,8 @@ BATCH_PROMPT_TEMPLATE = """
   {{
     "index": 1,
     "relevant": false,
+    "track": false,
+    "track_reason": "",
     "title_zh": "",
     "summary_zh": "",
     "why_matters_zh": "",
@@ -77,6 +81,12 @@ BATCH_PROMPT_TEMPLATE = """
 
 注意：
 - relevant=false 时，其他字段留空字符串即可
+- track=true 表示该事件值得跨天持续追踪（只用于以下类型）：
+  * 重大安全事件（>$100万被盗，且后续可能有资金追回/起诉/和解）
+  * EIP/协议提案进入关键阶段（Final Review、最后征集意见）
+  * 重大监管进展（法案投票、起诉/和解/判决）
+  * 大型机构动作的后续（ETF 获批、破产清算重要节点）
+- track_reason 简述为何追踪（10字以内），track=false 时留空
 - title_zh 必须简洁，不超过 20 个汉字
 - 只输出 JSON 数组，不要有其他文字
 """
@@ -233,6 +243,8 @@ def llm_filter_and_summarize(items: list[dict], model: str = DEFAULT_MODEL) -> l
             r = result_map.get(i, {})
             item = dict(item)
             item["llm_relevant"] = bool(r.get("relevant", True))
+            item["llm_track"] = bool(r.get("track", False))
+            item["llm_track_reason"] = r.get("track_reason", "") or ""
             item["title_zh"] = r.get("title_zh", "") or ""
             item["summary_zh"] = r.get("summary_zh", "") or ""
             item["why_matters_zh"] = r.get("why_matters_zh", "") or ""
@@ -245,3 +257,55 @@ def llm_filter_and_summarize(items: list[dict], model: str = DEFAULT_MODEL) -> l
 def is_llm_available() -> bool:
     """Check if LLM API key is configured."""
     return _load_api_key() is not None
+
+
+MATERIAL_UPDATE_PROMPT = """
+判断新内容是否是对已追踪事件的 material update（实质性新进展）。
+
+已追踪事件：
+标题：{tracked_title}
+追踪原因：{track_reason}
+
+新内容：
+标题：{new_title}
+摘要：{new_content}
+
+material update 的标准（必须满足至少一条）：
+- 事件状态发生变化（如：调查→起诉，草案→Final，冻结→追回/损失确认）
+- 出现重要新进展（新的官方声明、法庭判决、资金动向确认）
+- 事件规模发生重大变化（损失金额更新、影响范围扩大）
+
+不算 material update：
+- 重复报道同一事实
+- 分析/评论性文章
+- 相同信息换个角度的报道
+
+只回答 JSON，格式：
+{{"is_material_update": true/false, "reason": "一句话说明"}}
+"""
+
+
+def check_material_update(tracked_event: dict, new_item: dict, model: str = DEFAULT_MODEL) -> tuple[bool, str]:
+    """
+    Check if new_item contains a material update for a tracked event.
+    Returns (is_update, reason).
+    """
+    prompt = MATERIAL_UPDATE_PROMPT.format(
+        tracked_title=tracked_event.get("canonical_title", ""),
+        track_reason=tracked_event.get("track_reason", ""),
+        new_title=new_item.get("title", ""),
+        new_content=(new_item.get("content", "") or "")[:300],
+    )
+    try:
+        response = _call_anthropic(
+            messages=[{"role": "user", "content": prompt}],
+            system="你是事件追踪助手，判断新内容是否对已追踪事件有实质性新进展。",
+            model=model,
+        )
+        match = re.search(r'\{.*\}', response, re.S)
+        if match:
+            result = json.loads(match.group(0))
+            return bool(result.get("is_material_update")), result.get("reason", "")
+    except Exception:
+        pass
+    return False, ""

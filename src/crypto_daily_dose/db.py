@@ -139,8 +139,15 @@ def init_event_memory(conn: sqlite3.Connection) -> None:
             status TEXT,
             is_active INTEGER DEFAULT 1,
             material_update_flag INTEGER DEFAULT 0,
-            notes TEXT
+            notes TEXT,
+            tracking_status TEXT DEFAULT 'none',
+            track_reason TEXT,
+            last_checked_at TEXT
         );
+
+        -- Migration: add tracking columns if they don't exist (for existing DBs)
+        CREATE TABLE IF NOT EXISTS _schema_migrations (key TEXT PRIMARY KEY, applied_at TEXT);
+        
 
         CREATE TABLE IF NOT EXISTS event_observations (
             event_id TEXT NOT NULL,
@@ -166,6 +173,16 @@ def init_event_memory(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_event_reports_report_date ON event_reports(report_date);
         """
     )
+    conn.commit()
+    # Migrate existing events table if tracking columns are missing
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+    for col, definition in [
+        ("tracking_status", "TEXT DEFAULT 'none'"),
+        ("track_reason", "TEXT"),
+        ("last_checked_at", "TEXT"),
+    ]:
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {definition}")
     conn.commit()
 
 
@@ -477,6 +494,77 @@ def persist_report_snapshot(report_date: str, channel: str, items: list[dict]) -
             written += 1
         conn.commit()
     return written
+
+
+MAX_TRACKED_EVENTS = 10
+
+
+def get_active_tracked_events() -> list[dict]:
+    """Return events currently being tracked (tracking_status='active')."""
+    if not EVENT_DB.exists():
+        return []
+    with connect(EVENT_DB) as conn:
+        init_event_memory(conn)
+        rows = conn.execute(
+            "SELECT event_id, canonical_title, canonical_url, category, first_seen_at, track_reason "
+            "FROM events WHERE tracking_status = 'active' ORDER BY first_seen_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def start_tracking(event_id: str, reason: str) -> None:
+    """Mark an event for cross-day tracking."""
+    if not EVENT_DB.exists():
+        return
+    now = now_iso()
+    with connect(EVENT_DB) as conn:
+        init_event_memory(conn)
+        # Archive oldest if at limit
+        active_count = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE tracking_status = 'active'"
+        ).fetchone()[0]
+        if active_count >= MAX_TRACKED_EVENTS:
+            oldest = conn.execute(
+                "SELECT event_id FROM events WHERE tracking_status = 'active' ORDER BY first_seen_at ASC LIMIT 1"
+            ).fetchone()
+            if oldest:
+                conn.execute(
+                    "UPDATE events SET tracking_status = 'archived' WHERE event_id = ?",
+                    (oldest[0],)
+                )
+        conn.execute(
+            "UPDATE events SET tracking_status = 'active', track_reason = ?, last_checked_at = ? WHERE event_id = ?",
+            (reason, now, event_id)
+        )
+        conn.commit()
+
+
+def update_tracking_check(event_id: str, had_update: bool) -> None:
+    """Record that a tracked event was checked, optionally marking material update."""
+    if not EVENT_DB.exists():
+        return
+    with connect(EVENT_DB) as conn:
+        conn.execute(
+            "UPDATE events SET last_checked_at = ?, material_update_flag = ? WHERE event_id = ?",
+            (now_iso(), 1 if had_update else 0, event_id)
+        )
+        conn.commit()
+
+
+def archive_stale_tracked_events(max_days: int = 30) -> int:
+    """Archive tracked events with no updates for max_days days."""
+    if not EVENT_DB.exists():
+        return 0
+    with connect(EVENT_DB) as conn:
+        result = conn.execute(
+            """UPDATE events SET tracking_status = 'archived'
+               WHERE tracking_status = 'active'
+               AND (last_checked_at IS NULL OR
+                    datetime(last_checked_at) < datetime('now', ?))""",
+            (f'-{max_days} days',)
+        )
+        conn.commit()
+    return result.rowcount
 
 
 def init_all() -> dict:
