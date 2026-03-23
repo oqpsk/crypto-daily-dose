@@ -22,8 +22,10 @@ from crypto_daily_dose.db import (
     start_tracking,
     update_tracking_check,
     archive_stale_tracked_events,
+    update_source_health,
+    get_unhealthy_sources,
 )
-from crypto_daily_dose.llm import llm_filter_and_summarize, is_llm_available, check_material_update
+from crypto_daily_dose.llm import llm_filter_and_summarize, is_llm_available, check_material_update, generate_quality_assessment
 from crypto_daily_dose.prices import fetch_price_changes, build_price_alert_items
 from crypto_daily_dose.twitter import fetch_tweets as fetch_tweets_x, is_available as twitter_available, check_cookie_expiry
 
@@ -444,11 +446,13 @@ def parse_html_sources(cutoff: datetime) -> tuple[list[dict], dict, list[str]]:
     }
     errors = []
     for source_name, index_url, path_hints, item_type in HTML_SOURCES:
+        source_id = f"html::{source_name.lower().replace(' ', '_')}"
         try:
             index_html = fetch(index_url, accept='text/html,application/xhtml+xml')
         except Exception as e:
             stats['index_fetch_failed'] += 1
             errors.append(f"HTML {source_name} index fetch failed: {e}")
+            update_source_health(source_id, success=False, error=str(e))
             continue
 
         article_links = extract_links(index_url, index_html, list(path_hints), limit=MAX_HTML_LINKS_PER_SOURCE)
@@ -456,6 +460,7 @@ def parse_html_sources(cutoff: datetime) -> tuple[list[dict], dict, list[str]]:
         if not article_links:
             stats['zero_link_count'] += 1
             errors.append(f"HTML {source_name} extracted 0 candidate links")
+            update_source_health(source_id, success=False, error="0 candidate links extracted")
             continue
 
         for link in article_links:
@@ -488,6 +493,10 @@ def parse_html_sources(cutoff: datetime) -> tuple[list[dict], dict, list[str]]:
                 'timestamp': dt.isoformat(),
             })
             stats['accepted'] += 1
+        # Update health for this HTML source
+        source_accepted = sum(1 for item in items if item.get('source') == source_name)
+        if source_accepted > 0:
+            update_source_health(source_id, success=True, item_count=source_accepted)
     return items, stats, errors
 
 
@@ -949,10 +958,14 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     items, errors = [], []
     html_stats = {}
     for source_name, url, item_type in RSS_FEEDS:
+        source_id = f"rss::{source_name.lower().replace(' ', '_')}"
         try:
-            items.extend(parse_feed_entries(source_name, url, item_type, cutoff))
+            new_items = parse_feed_entries(source_name, url, item_type, cutoff)
+            items.extend(new_items)
+            update_source_health(source_id, success=True, item_count=len(new_items))
         except Exception as e:
             errors.append(f"RSS {source_name}: {e}")
+            update_source_health(source_id, success=False, error=str(e))
     try:
         html_items, html_stats, html_errors = parse_html_sources(cutoff)
         items.extend(html_items)
@@ -960,7 +973,8 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     except Exception as e:
         errors.append(f"HTML sources: {e}")
     try:
-        items.extend(parse_github(cutoff))
+        github_items = parse_github(cutoff)
+        items.extend(github_items)
     except Exception as e:
         errors.append(f"GitHub: {e}")
 
@@ -1066,6 +1080,37 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
                     errors.append(f"Pushover API error: {parsed}")
             else:
                 errors.append("Pushover config missing")
+
+    # Quality report — write to state/ and notify Chronos
+    if use_llm and is_llm_available():
+        try:
+            quality_assessment = generate_quality_assessment(report)
+            twitter_count = sum(1 for x in discord_items if x.get("type") == "tweet")
+            rss_count = len(discord_items) - twitter_count
+            category_counts: dict[str, int] = {}
+            for item in discord_items:
+                cat = item.get("llm_category") or item.get("category", "未分类")
+                category_counts[cat] = category_counts.get(cat, 0) + 1
+            quality_report = {
+                "date": report_date,
+                "run": datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M"),
+                "total_items": len(discord_items),
+                "categories": category_counts,
+                "missing_categories": quality_assessment.get("missing", []),
+                "source_breakdown": {"RSS/GitHub/HTML": rss_count, "X/Twitter": twitter_count},
+                "x_ratio": round(twitter_count / max(len(discord_items), 1), 2),
+                "llm_assessment": quality_assessment.get("assessment", ""),
+            }
+            quality_file = STATE_DIR / f"quality_report_{report_date}.json"
+            save_json(quality_file, quality_report)
+        except Exception as e:
+            errors.append(f"Quality report: {e}")
+
+    # Source health check — alert if any source has consecutive_failures >= 2
+    unhealthy = get_unhealthy_sources(min_failures=2)
+    if unhealthy:
+        names = ", ".join(f"{s['name']}({s['consecutive_failures']}次)" for s in unhealthy)
+        errors.append(f"SOURCE_HEALTH_ALERT: 以下源连续失败 ≥2 次：{names}。请检查或更换。")
 
     sys.stdout.write(report)
     if errors:

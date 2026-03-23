@@ -286,6 +286,45 @@ material update 的标准（必须满足至少一条）：
 """
 
 
+QUALITY_ASSESSMENT_PROMPT = """
+今天的日报内容如下：
+
+{report_content}
+
+请做一次简短的覆盖分析，回答以下问题：
+1. 今天覆盖了哪些话题？
+2. 哪些重要话题今天没有内容？（钱包/AA/UX、协议/EIP、安全/风险、TRON/稳定币/支付、竞品情报）
+3. 信息来源质量：X/Twitter 实时信号 vs RSS 滞后报道的比例如何？
+4. 整体评价（1-2句话）
+
+只输出 JSON 格式：
+{{
+  "covered": ["协议", "安全"],
+  "missing": ["钱包/支付", "竞品情报"],
+  "assessment": "今日协议和安全覆盖良好，但钱包和TRON相关内容空缺，建议关注相关X账号活跃度。"
+}}
+"""
+
+
+def generate_quality_assessment(report_content: str, model: str = DEFAULT_MODEL) -> dict:
+    """Generate a quality assessment for today's report."""
+    if not report_content.strip() or "今天没有高价值" in report_content:
+        return {"covered": [], "missing": ["全部"], "assessment": "今日无有效内容产出。"}
+    prompt = QUALITY_ASSESSMENT_PROMPT.format(report_content=report_content[:2000])
+    try:
+        response = _call_anthropic(
+            messages=[{"role": "user", "content": prompt}],
+            system="你是加密日报质量评估助手，分析日报内容覆盖情况。",
+            model=model,
+        )
+        match = re.search(r'\{.*\}', response, re.S)
+        if match:
+            return json.loads(match.group(0))
+    except Exception:
+        pass
+    return {"covered": [], "missing": [], "assessment": "质量评估失败。"}
+
+
 def check_material_update(tracked_event: dict, new_item: dict, model: str = DEFAULT_MODEL) -> tuple[bool, str]:
     """
     Check if new_item contains a material update for a tracked event.

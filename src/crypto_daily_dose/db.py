@@ -321,6 +321,54 @@ def seed_source_registry(conn: sqlite3.Connection, config: dict) -> None:
     conn.commit()
 
 
+def update_source_health(source_id: str, success: bool, item_count: int = 0, error: str = "") -> None:
+    """Update health stats for a source after a fetch attempt."""
+    if not SOURCE_DB.exists():
+        return
+    now = now_iso()
+    with connect(SOURCE_DB) as conn:
+        if success:
+            conn.execute(
+                """UPDATE source_health SET
+                   last_success_at = ?,
+                   consecutive_failures = 0,
+                   last_item_count = ?,
+                   avg_items_per_run = COALESCE(
+                       (avg_items_per_run * 0.8 + ? * 0.2), ?
+                   )
+                   WHERE source_id = ?""",
+                (now, item_count, item_count, float(item_count), source_id)
+            )
+        else:
+            conn.execute(
+                """UPDATE source_health SET
+                   last_failure_at = ?,
+                   consecutive_failures = consecutive_failures + 1,
+                   last_error = ?,
+                   last_item_count = 0
+                   WHERE source_id = ?""",
+                (now, error[:200], source_id)
+            )
+        conn.commit()
+
+
+def get_unhealthy_sources(min_failures: int = 2) -> list[dict]:
+    """Return sources with consecutive_failures >= min_failures."""
+    if not SOURCE_DB.exists():
+        return []
+    with connect(SOURCE_DB) as conn:
+        rows = conn.execute(
+            """SELECT s.name, s.source_id, sh.consecutive_failures,
+                      sh.last_failure_at, sh.last_error, sh.last_success_at
+               FROM source_health sh
+               JOIN sources s ON s.source_id = sh.source_id
+               WHERE sh.consecutive_failures >= ?
+               ORDER BY sh.consecutive_failures DESC""",
+            (min_failures,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_sources(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
