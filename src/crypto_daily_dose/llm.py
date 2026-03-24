@@ -252,9 +252,21 @@ def llm_filter_and_summarize(items: list[dict], model: str = DEFAULT_MODEL) -> l
         # Merge results back into items
         result_map = {r.get("index", i): r for i, r in enumerate(results)}
         for i, item in enumerate(batch):
-            r = result_map.get(i, {})
+            r = result_map.get(i)
             item = dict(item)
-            item["llm_relevant"] = bool(r.get("relevant", True))
+            if r is None:
+                item["llm_relevant"] = False
+                item["llm_significance"] = "normal"
+                item["llm_track"] = False
+                item["llm_track_reason"] = ""
+                item["title_zh"] = ""
+                item["summary_zh"] = ""
+                item["why_matters_zh"] = ""
+                item["llm_category"] = ""
+                item["llm_parse_error"] = "missing_result"
+                enriched.append(item)
+                continue
+            item["llm_relevant"] = bool(r.get("relevant", False))
             item["llm_significance"] = r.get("significance", "normal") or "normal"
             item["llm_track"] = bool(r.get("track", False))
             item["llm_track_reason"] = r.get("track_reason", "") or ""
@@ -262,6 +274,7 @@ def llm_filter_and_summarize(items: list[dict], model: str = DEFAULT_MODEL) -> l
             item["summary_zh"] = r.get("summary_zh", "") or ""
             item["why_matters_zh"] = r.get("why_matters_zh", "") or ""
             item["llm_category"] = r.get("category", "") or ""
+            item["llm_parse_error"] = ""
             enriched.append(item)
 
     return enriched

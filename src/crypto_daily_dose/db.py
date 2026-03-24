@@ -562,8 +562,6 @@ def get_active_tracked_events() -> list[dict]:
 
 def start_tracking(event_id: str, reason: str) -> None:
     """Mark an event for cross-day tracking."""
-    if not EVENT_DB.exists():
-        return
     now = now_iso()
     with connect(EVENT_DB) as conn:
         init_event_memory(conn)
