@@ -580,22 +580,43 @@ def start_tracking(event_id: str, reason: str) -> None:
                     "UPDATE events SET tracking_status = 'archived' WHERE event_id = ?",
                     (oldest[0],)
                 )
+        # UPSERT: if event doesn't exist yet, insert with tracking_status='active'
+        # If it exists, update. This handles the case where start_tracking is called
+        # before persist_report_snapshot writes the event to DB.
         conn.execute(
-            "UPDATE events SET tracking_status = 'active', track_reason = ?, last_checked_at = ? WHERE event_id = ?",
-            (reason, now, event_id)
+            """INSERT INTO events (
+                event_id, canonical_title, canonical_url, category,
+                first_seen_at, last_seen_at, tracking_status, track_reason, last_checked_at,
+                status, is_active, material_update_flag
+            ) VALUES (?, '', '', '', ?, ?, 'active', ?, ?, 'observed', 1, 0)
+            ON CONFLICT(event_id) DO UPDATE SET
+                tracking_status = 'active',
+                track_reason = excluded.track_reason,
+                last_checked_at = excluded.last_checked_at""",
+            (event_id, now, now, reason, now)
         )
         conn.commit()
 
 
 def update_tracking_check(event_id: str, had_update: bool) -> None:
-    """Record that a tracked event was checked, optionally marking material update."""
+    """Record that a tracked event was checked, always updating last_checked_at.
+    material_update_flag is set only when had_update=True to indicate a new development.
+    last_checked_at is always updated so archive_stale won't prematurely archive
+    events that are being checked but have no material update yet."""
     if not EVENT_DB.exists():
         return
     with connect(EVENT_DB) as conn:
-        conn.execute(
-            "UPDATE events SET last_checked_at = ?, material_update_flag = ? WHERE event_id = ?",
-            (now_iso(), 1 if had_update else 0, event_id)
-        )
+        if had_update:
+            conn.execute(
+                "UPDATE events SET last_checked_at = ?, material_update_flag = 1 WHERE event_id = ?",
+                (now_iso(), event_id)
+            )
+        else:
+            # Always record the check, but don't overwrite a prior material_update_flag=1
+            conn.execute(
+                "UPDATE events SET last_checked_at = ? WHERE event_id = ?",
+                (now_iso(), event_id)
+            )
         conn.commit()
 
 

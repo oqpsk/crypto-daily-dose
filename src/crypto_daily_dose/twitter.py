@@ -125,6 +125,7 @@ def refresh_cookies() -> int:
     cookies = _extract_cookies_from_edge()
     COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
     COOKIES_FILE.write_text(json.dumps(cookies, indent=2))
+    COOKIES_FILE.chmod(0o600)  # Restrict to owner only — cookies can hijack X session
     return len(cookies)
 
 
@@ -267,14 +268,18 @@ def fetch_tweets(cutoff: datetime, accounts: list[str] | None = None) -> tuple[l
 
 
 def is_available() -> bool:
-    """Check if X monitoring is configured and cookies are valid."""
+    """Check if X monitoring is configured and cookies are valid.
+    Pure availability check — does not trigger side effects (no network calls)."""
     if not COOKIES_FILE.exists():
         try:
             refresh_cookies()
         except Exception:
             return False
-    cookies = load_cookies()
-    return cookies_valid(cookies)
+    try:
+        cookies = load_cookies()
+        return cookies_valid(cookies)
+    except Exception:
+        return False
 
 
 def check_cookie_expiry() -> int | None:

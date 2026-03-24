@@ -1094,8 +1094,9 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
                         continue
                     # LLM material update check
                     is_update, reason = check_material_update(tracked_event, candidate)
+                    # Always record the check (fixes: last_checked_at not updated on no-update)
+                    update_tracking_check(tracked_event["event_id"], had_update=is_update)
                     if is_update:
-                        update_tracking_check(tracked_event["event_id"], had_update=True)
                         # Clone item with tracking label
                         update_item = dict(candidate)
                         update_item["is_tracked_update"] = True
@@ -1116,20 +1117,8 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     report_date = datetime.now().astimezone().strftime("%Y-%m-%d")
     reports_written = persist_report_snapshot(report_date, 'discord', discord_items)
     OUTPUT_FILE.write_text(report)
-    save_json(STATE_FILE, {
-        "lastRunAt": datetime.now().astimezone().isoformat(),
-        "itemCount": len(ranked),
-        "discordCount": len(discord_items),
-        "urgentCount": len([x for x in ranked if x.get('urgency')]),
-        "db": {
-            "observationsWritten": observations_written,
-            "reportRowsWritten": reports_written
-        },
-        "dropped": dropped,
-        "html": html_stats,
-        "errors": errors,
-        "sample": ranked[:10],
-    })
+    # NOTE: STATE_FILE is written at end of run() so errors from Pushover/quality/health
+    # are all captured. Do not move this save_json call earlier.
 
     if send_pushover and push:
         # Dedup: only send Pushover once per calendar day (SGT)
@@ -1196,6 +1185,22 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     if unhealthy:
         names = ", ".join(f"{s['name']}({s['consecutive_failures']}次)" for s in unhealthy)
         errors.append(f"SOURCE_HEALTH_ALERT: 以下源连续失败 ≥2 次：{names}。请检查或更换。")
+
+    # Write state file last so all errors (Pushover, quality, health) are captured
+    save_json(STATE_FILE, {
+        "lastRunAt": datetime.now().astimezone().isoformat(),
+        "itemCount": len(ranked),
+        "discordCount": len(discord_items),
+        "urgentCount": len([x for x in ranked if x.get('urgency')]),
+        "db": {
+            "observationsWritten": observations_written,
+            "reportRowsWritten": reports_written
+        },
+        "dropped": dropped,
+        "html": html_stats,
+        "errors": errors,
+        "sample": ranked[:10],
+    })
 
     sys.stdout.write(report)
     if errors:
