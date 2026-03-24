@@ -594,11 +594,57 @@ def dedup(items: list[dict]) -> list[dict]:
     return out
 
 
+STOP_WORDS = frozenset({
+    'the','a','an','is','are','was','were','be','been','has','have','had',
+    'will','would','could','should','may','might','in','on','at','to','for',
+    'of','and','or','but','with','by','from','as','it','this','that','its',
+    'after','before','over','says','said','new','more','than','how','what',
+    'who','when','why','into','also','its','which','their','there','about',
+})
+
+
+def _cluster_items(items: list[dict], threshold_tokens: int, use_content: bool = True) -> list[list[dict]]:
+    """Cluster items by semantic similarity. Returns list of clusters."""
+    if not items:
+        return []
+    clusters: list[list[dict]] = []
+    assigned = [False] * len(items)
+
+    for i, item in enumerate(items):
+        if assigned[i]:
+            continue
+        cluster = [item]
+        assigned[i] = True
+        text_i = f"{item.get('title','')}{' ' + item.get('content','') if use_content else ''}".lower()
+        tokens_i = set(norm_title(text_i).split()) - STOP_WORDS
+
+        for j, other in enumerate(items):
+            if assigned[j] or i == j:
+                continue
+            text_j = f"{other.get('title','')}{' ' + other.get('content','') if use_content else ''}".lower()
+            tokens_j = set(norm_title(text_j).split()) - STOP_WORDS
+            if not tokens_i or not tokens_j:
+                continue
+            common = tokens_i & tokens_j
+            if len(common) >= threshold_tokens:
+                cluster.append(other)
+                assigned[j] = True
+        clusters.append(cluster)
+    return clusters
+
+
+def _best_in_cluster(cluster: list[dict]) -> dict:
+    """Pick best item from a cluster (prefer LLM-summarized, then longest content)."""
+    # Prefer items that have LLM summaries
+    llm_items = [x for x in cluster if x.get("title_zh") and x.get("summary_zh")]
+    candidates = llm_items if llm_items else cluster
+    return max(candidates, key=lambda x: len(x.get("summary_zh") or x.get("content", "") or ""))
+
+
 def dedup_tweets(items: list[dict]) -> list[dict]:
     """
     Merge X/Twitter items that describe the same event across multiple accounts.
-    Uses title similarity (threshold 0.4) since tweets are short.
-    Keeps the item with the longest content; merges source attribution.
+    Uses 3+ meaningful shared tokens (low threshold for short tweet text).
     Non-tweet items are returned unchanged.
     """
     tweets = [x for x in items if x.get("type") == "tweet"]
@@ -607,56 +653,63 @@ def dedup_tweets(items: list[dict]) -> list[dict]:
     if len(tweets) <= 1:
         return items
 
-    clusters: list[list[dict]] = []
-    assigned = [False] * len(tweets)
-
-    for i, item in enumerate(tweets):
-        if assigned[i]:
-            continue
-        cluster = [item]
-        assigned[i] = True
-        # Use title + content for better tweet matching (tweets have short/varied titles)
-        text_i = f"{item.get('title','')} {item.get('content','')}".lower()
-        tokens_i = set(norm_title(text_i).split())
-        for j, other in enumerate(tweets):
-            if assigned[j] or i == j:
-                continue
-            text_j = f"{other.get('title','')} {other.get('content','')}".lower()
-            tokens_j = set(norm_title(text_j).split())
-            if not tokens_i or not tokens_j:
-                continue
-            common = tokens_i & tokens_j
-            # Filter out stop words for matching
-            stop = {'the','a','an','is','are','was','were','be','been','has','have','had',
-                    'will','would','could','should','may','might','in','on','at','to','for',
-                    'of','and','or','but','with','by','from','as','it','this','that','its'}
-            meaningful_common = common - stop
-            # Merge if 3+ meaningful shared tokens (captures same-event tweets with different wording)
-            if len(meaningful_common) >= 3:
-                cluster.append(other)
-                assigned[j] = True
-        clusters.append(cluster)
-
+    clusters = _cluster_items(tweets, threshold_tokens=3, use_content=True)
     merged = []
     for cluster in clusters:
         if len(cluster) == 1:
             merged.append(cluster[0])
             continue
-        # Keep item with longest content, merge source attribution
-        best = max(cluster, key=lambda x: len(x.get("content", "") or ""))
+        best = dict(_best_in_cluster(cluster))
         authors = []
-        seen_authors = set()
+        seen = set()
         for c in cluster:
-            author = c.get("author", "")
-            if author and author not in seen_authors:
-                authors.append(f"@{author}")
-                seen_authors.add(author)
+            a = c.get("author", "")
+            if a and a not in seen:
+                authors.append(f"@{a}")
+                seen.add(a)
         if len(authors) > 1:
-            best = dict(best)
             best["source"] = f"X/{', '.join(authors)}"
         merged.append(best)
-
     return non_tweets + merged
+
+
+def dedup_cross_source(items: list[dict]) -> list[dict]:
+    """
+    Merge RSS/HTML items that describe the same event across multiple outlets.
+    Uses stricter Jaccard threshold (5+ shared tokens) since article titles are more uniform.
+    Keeps best-quality item; merges source attribution with · separator.
+    Stores all source URLs in extra_urls for multi-link display.
+    Tweet items pass through unchanged (handled by dedup_tweets).
+    """
+    non_news = [x for x in items if x.get("type") == "tweet"]
+    news = [x for x in items if x.get("type") != "tweet"]
+
+    if len(news) <= 1:
+        return items
+
+    clusters = _cluster_items(news, threshold_tokens=3, use_content=False)
+    merged = []
+    for cluster in clusters:
+        if len(cluster) == 1:
+            merged.append(cluster[0])
+            continue
+        best = dict(_best_in_cluster(cluster))
+        sources = []
+        extra_urls = []
+        seen_sources = set()
+        for c in sorted(cluster, key=lambda x: -x.get("score", {}).get("total", 0) if x.get("score") else 0):
+            src = c.get("source", "")
+            url = c.get("url", "")
+            if src and src not in seen_sources:
+                sources.append(src)
+                seen_sources.add(src)
+                if url and url != best.get("url"):
+                    extra_urls.append({"source": src, "url": url})
+        if len(sources) > 1:
+            best["source"] = " · ".join(sources)
+            best["extra_urls"] = extra_urls
+        merged.append(best)
+    return non_news + merged
 
 
 def enrich(items: list[dict], repeat_suppression: bool = True, use_llm: bool = False) -> tuple[list[dict], dict]:
@@ -897,13 +950,31 @@ def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
                 summary = summarize_body_zh(item)
                 importance = why_it_matters(item)
                 merged = summary if importance in summary else f"{summary} {importance}"
+
             # Add tracking label if this is a material update
             tracking_prefix = "📌 **[事件追踪]** " if item.get("is_tracked_update") else ""
-            lines += [
-                f"- {tracking_prefix}**{title_display}**",
-                f"  - 摘要：{merged}",
-                f"  - 来源：{item['source']} — {item['url']}",
-            ]
+            is_high = item.get("llm_significance") == "high"
+
+            if is_high:
+                # High significance: expanded format with sub-bullets
+                lines.append(f"- 🔴 **[重大]** {tracking_prefix}**{title_display}**")
+                lines.append(f"  {merged}")
+                # Multi-source sub-bullets if available
+                extra_urls = item.get("extra_urls", [])
+                if extra_urls:
+                    lines.append(f"  → 多角度报道：")
+                    lines.append(f"    • {item['source']}：[原文]({item['url']})")
+                    for eu in extra_urls:
+                        lines.append(f"    • {eu['source']}：[原文]({eu['url']})")
+                else:
+                    lines.append(f"  来源：{item['source']} — {item['url']}")
+            else:
+                # Normal format
+                lines += [
+                    f"- {tracking_prefix}**{title_display}**",
+                    f"  - 摘要：{merged}",
+                    f"  - 来源：{item['source']} — {item['url']}",
+                ]
         lines.append("")
 
     push_candidates = urgent_items + [x for x in discord_items if x.get("url") not in urgent_urls]
@@ -1036,7 +1107,7 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     # Add tracked update items to the pool
     items = items + tracked_update_items
 
-    filtered, dropped = enrich(dedup_tweets(dedup(items)), repeat_suppression=repeat_suppression, use_llm=use_llm)
+    filtered, dropped = enrich(dedup_cross_source(dedup_tweets(dedup(items))), repeat_suppression=repeat_suppression, use_llm=use_llm)
     ranked = sorted(filtered, key=sort_key, reverse=True)
     report, push, discord_items = build_report(ranked)
 

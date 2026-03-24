@@ -61,6 +61,7 @@ BATCH_PROMPT_TEMPLATE = """
   {{
     "index": 0,
     "relevant": true,
+    "significance": "normal",
     "track": false,
     "track_reason": "",
     "title_zh": "中文标题（20字以内）",
@@ -71,6 +72,7 @@ BATCH_PROMPT_TEMPLATE = """
   {{
     "index": 1,
     "relevant": false,
+    "significance": "normal",
     "track": false,
     "track_reason": "",
     "title_zh": "",
@@ -82,6 +84,15 @@ BATCH_PROMPT_TEMPLATE = """
 
 注意：
 - relevant=false 时，其他字段留空字符串即可
+- significance 取值：
+  * "high"：行业级重大事件，需满足以下至少一条：
+    - $1亿以上安全漏洞/被盗事件
+    - 主要国家/地区重大监管立法或执法行动（非日常指引）
+    - 主流资产（BTC/ETH/BNB/SOL）24h 波动 ≥10%
+    - 顶级机构（贝莱德/高盛/监管机构）首次进入加密领域的重大动作
+    - 以太坊/比特币协议级别的重大升级（非提案阶段）
+  * "normal"：其他所有内容（绝大多数是这个）
+  - high 标准要非常严格，每份日报预期 0-2 条，大多数时候 0 条
 - track=true 表示该事件值得跨天持续追踪（只用于以下类型）：
   * 重大安全事件（>$100万被盗，且后续可能有资金追回/起诉/和解）
   * EIP/协议提案进入关键阶段（Final Review、最后征集意见）
@@ -244,6 +255,7 @@ def llm_filter_and_summarize(items: list[dict], model: str = DEFAULT_MODEL) -> l
             r = result_map.get(i, {})
             item = dict(item)
             item["llm_relevant"] = bool(r.get("relevant", True))
+            item["llm_significance"] = r.get("significance", "normal") or "normal"
             item["llm_track"] = bool(r.get("track", False))
             item["llm_track_reason"] = r.get("track_reason", "") or ""
             item["title_zh"] = r.get("title_zh", "") or ""
