@@ -167,6 +167,16 @@ def parse_dt(value: str | None) -> datetime | None:
             return dt.astimezone(timezone.utc)
         except Exception:
             continue
+    # M/D/YYYY or M/D/YY format (Rekt, some blogs)
+    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2,4})$', value)
+    if m:
+        try:
+            month, day, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if year < 100:
+                year += 2000
+            return datetime(year, month, day, tzinfo=timezone.utc)
+        except Exception:
+            pass
     return None
 
 
@@ -477,6 +487,17 @@ def parse_html_sources(cutoff: datetime) -> tuple[list[dict], dict, list[str]]:
             desc = extract_meta(html, 'description') or extract_meta(html, 'og:description')
             desc = compact(strip_html(desc), 280)
             pub = extract_meta(html, 'article:published_time') or extract_meta(html, 'og:published_time') or extract_meta(html, 'publication_date')
+            # Fallback: extract date from __NEXT_DATA__ (Rekt, Next.js sites)
+            if not pub:
+                import json as _json
+                nd = re.search(r'__NEXT_DATA__[^>]*>(.*?)</script>', html, re.S)
+                if nd:
+                    try:
+                        _d = _json.loads(nd.group(1))
+                        _pp = _d.get('props',{}).get('pageProps',{})
+                        pub = (_pp.get('data') or _pp.get('article') or _pp.get('post') or {}).get('date', '')
+                    except Exception:
+                        pass
             dt = parse_dt(pub)
             if not dt:
                 stats['missing_timestamp_count'] += 1
@@ -493,10 +514,10 @@ def parse_html_sources(cutoff: datetime) -> tuple[list[dict], dict, list[str]]:
                 'timestamp': dt.isoformat(),
             })
             stats['accepted'] += 1
-        # Update health for this HTML source
+        # Update health: success if links were found (even if 0 accepted after cutoff filter)
+        # This distinguishes "source is reachable" from "no new content today"
         source_accepted = sum(1 for item in items if item.get('source') == source_name)
-        if source_accepted > 0:
-            update_source_health(source_id, success=True, item_count=source_accepted)
+        update_source_health(source_id, success=True, item_count=source_accepted)
     return items, stats, errors
 
 
