@@ -687,7 +687,7 @@ def dedup_cross_source(items: list[dict]) -> list[dict]:
     if len(news) <= 1:
         return items
 
-    clusters = _cluster_items(news, threshold_tokens=3, use_content=False)
+    clusters = _cluster_items(news, threshold_tokens=5, use_content=False)
     merged = []
     for cluster in clusters:
         if len(cluster) == 1:
@@ -802,12 +802,23 @@ def sort_key(item: dict):
 
 def zh_category(category: str) -> str:
     mapping = {
-        "Wallet / AA / UX": "💼 钱包 / AA / 交互体验",
-        "Protocol / EIP / Infra": "🧱 协议 / EIP / 基础设施",
-        "Security / Risk / Compliance": "🛡️ 安全 / 风险 / 合规",
-        "TRON / Stablecoin / Payments": "💸 TRON / 稳定币 / 支付",
-        "Competitor Intelligence": "🧭 竞品情报",
-        "Market Structure / Narrative": "📊 市场结构 / 叙事",
+        "Wallet / AA / UX": "💼 钱包支付",
+        "Protocol / EIP / Infra": "🧱 协议",
+        "Security / Risk / Compliance": "🛡️ 安全",
+        "TRON / Stablecoin / Payments": "💸 TRON/稳定币",
+        "Competitor Intelligence": "🧭 竞品",
+        "Market Structure / Narrative": "📊 市场",
+        # LLM category names
+        "监管": "🧭 监管",
+        "安全": "🛡️ 安全",
+        "协议": "🧱 协议",
+        "钱包支付": "💼 钱包支付",
+        "机构": "💼 机构",
+        "行业": "📊 行业",
+        "宏观": "📊 宏观",
+        "价格": "📊 价格",
+        "TRON/稳定币": "💸 TRON/稳定币",
+        "竞品情报": "🧭 竞品",
     }
     return mapping.get(category, category)
 
@@ -931,49 +942,53 @@ def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
     from collections import OrderedDict
     grouped: OrderedDict[str, list] = OrderedDict()
     for item in discord_items:
-        if item.get("title_zh") and item.get("summary_zh"):
-            cat_display = item.get("llm_category") or zh_category(item.get("category", ""))
-        else:
-            cat_display = zh_category(item.get("category", ""))
+        raw_cat = item.get("llm_category") or item.get("category", "")
+        cat_display = zh_category(raw_cat) if raw_cat else "📊 其他"
         grouped.setdefault(cat_display, []).append(item)
+
+    def _one_sentence(text: str, limit: int = 60) -> str:
+        """Trim summary to one sentence (first sentence or first limit chars)."""
+        text = (text or "").strip()
+        for sep in ["。", "；", ". "]:
+            idx = text.find(sep)
+            if 10 < idx < limit:
+                return text[:idx + len(sep)].strip()
+        return compact(text, limit)
 
     for cat_display, cat_items in grouped.items():
         lines.append(f"## {cat_display}")
         for item in cat_items:
             if item.get("title_zh") and item.get("summary_zh"):
                 title_display = item["title_zh"]
-                summary_display = item["summary_zh"]
-                why_display = item.get("why_matters_zh", "")
-                merged = f"{summary_display} {why_display}".strip() if why_display else summary_display
+                summary_display = _one_sentence(item["summary_zh"])
             else:
                 title_display = summarize_title_zh(item)
-                summary = summarize_body_zh(item)
-                importance = why_it_matters(item)
-                merged = summary if importance in summary else f"{summary} {importance}"
+                summary_display = _one_sentence(summarize_body_zh(item))
 
             # Add tracking label if this is a material update
             tracking_prefix = "📌 **[事件追踪]** " if item.get("is_tracked_update") else ""
             is_high = item.get("llm_significance") == "high"
+            source_link = f"[{item['source']}]({item['url']})" if item.get("url") else item.get("source", "")
 
             if is_high:
-                # High significance: expanded format with sub-bullets
+                # High significance: expanded format, emoji + [重大]
                 lines.append(f"- 🔴 **[重大]** {tracking_prefix}**{title_display}**")
-                lines.append(f"  {merged}")
-                # Multi-source sub-bullets if available
+                lines.append(f"  {summary_display}")
                 extra_urls = item.get("extra_urls", [])
                 if extra_urls:
-                    lines.append(f"  → 多角度报道：")
-                    lines.append(f"    • {item['source']}：[原文]({item['url']})")
+                    # Each source on its own line, no first-line aggregation
+                    lines.append(f"  来源：{source_link}")
                     for eu in extra_urls:
-                        lines.append(f"    • {eu['source']}：[原文]({eu['url']})")
+                        eu_link = f"[{eu['source']}]({eu['url']})" if eu.get("url") else eu.get("source", "")
+                        lines.append(f"  来源：{eu_link}")
                 else:
-                    lines.append(f"  来源：{item['source']} — {item['url']}")
+                    lines.append(f"  来源：{source_link}")
             else:
-                # Normal format
+                # Normal format: compact, hyperlink source
                 lines += [
                     f"- {tracking_prefix}**{title_display}**",
-                    f"  - 摘要：{merged}",
-                    f"  - 来源：{item['source']} — {item['url']}",
+                    f"  {summary_display}",
+                    f"  来源：{source_link}",
                 ]
         lines.append("")
 
