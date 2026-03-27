@@ -1024,9 +1024,18 @@ def build_report(items: list[dict]) -> tuple[str, str | None, list[dict]]:
                 continue
             seen_push_texts.add(key)
             selected.append((item, text))
-            if len(selected) >= 2:
+            if len(selected) >= 5:
                 break
-        push = "\n".join(f"{push_emoji(item['category'])} {text}" for item, text in selected) if selected else None
+        if selected:
+            push_lines = [
+                f"{push_emoji(item['category'])} <b>{text}</b>"
+                for item, text in selected
+            ]
+            discord_url = "https://discord.com/channels/1483493776260333709/1485747708496183481"
+            push_lines.append(f'\n<a href="{discord_url}">→ 查看完整日报</a>')
+            push = "\n".join(push_lines)
+        else:
+            push = None
     else:
         push = None
     return "\n".join(lines).strip() + "\n", push, discord_items
@@ -1167,7 +1176,18 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
             cfg = load_json(PUSHOVER_CFG, {})
             token, user = cfg.get("app_token"), cfg.get("user_key")
             if token and user:
-                payload = urllib.parse.urlencode({"token": token, "user": user, "title": "加密情报", "message": push}).encode()
+                # Build title with date, session label (早报/下午报), and item count
+                _now_sgt = datetime.now(timezone(timedelta(hours=8)))
+                _session_label = "早报" if _now_sgt.hour < 14 else "下午报"
+                _item_count = len(discord_items)
+                _push_title = f"💊 Crypto Daily Dose — {today_sgt} {_session_label}（{_item_count}条）"
+                payload = urllib.parse.urlencode({
+                    "token": token,
+                    "user": user,
+                    "title": _push_title,
+                    "message": push,
+                    "html": "1",
+                }).encode()
                 req = urllib.request.Request(API_PUSHOVER, data=payload, method="POST")
                 with urllib.request.urlopen(req, timeout=20) as resp:
                     parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
