@@ -57,6 +57,12 @@ TRACKED_ACCOUNTS = [
     "dannyryan",
     # Institutional / Market
     "saylor",
+    # L2 / Competitor ecosystems
+    "base",
+    "arbitrum",
+    "OptimismFND",
+    "zksync",
+    "RabbyWallet",
 ]
 
 MAX_TWEETS_PER_ACCOUNT = 3

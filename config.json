@@ -30,7 +30,11 @@
     ["CertiK", "https://medium.com/feed/certik", "security_blog"],
     ["SlowMist", "https://slowmist.medium.com/feed", "security_blog"],
     ["Decrypt", "https://decrypt.co/feed", "news"],
-    ["The Defiant", "https://thedefiant.io/feed", "news"]
+    ["The Defiant", "https://thedefiant.io/feed", "news"],
+    ["Optimism Blog", "https://optimism.mirror.xyz/feed", "blog"],
+    ["Arbitrum Blog", "https://arbitrumfoundation.medium.com/feed", "blog"],
+    ["Base Blog", "https://base.mirror.xyz/feed", "blog"],
+    ["zkSync Blog", "https://medium.com/feed/zksync", "blog"]
   ],
   "github_endpoints": [
     ["Ethereum/EIPs Pulls", "https://api.github.com/repos/ethereum/EIPs/pulls?state=all&sort=updated&direction=desc&per_page=10", "github_pull"],
