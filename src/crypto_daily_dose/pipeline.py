@@ -85,6 +85,7 @@ SECONDARY_THRESHOLD = int(CONFIG["thresholds"]["secondary"])
 DISCORD_MIN_THRESHOLD = int(CONFIG["thresholds"]["discord_min"])
 URGENT_THRESHOLD = int(CONFIG["thresholds"]["urgent"])
 MAX_HTML_LINKS_PER_SOURCE = 3
+PUSHOVER_MIN_ITEMS = 2  # Minimum discord_items count to send Pushover
 if SOURCE_DB.exists():
     RUNTIME_SOURCES = load_runtime_sources()
 else:
@@ -908,6 +909,14 @@ def summarize_title_zh(item: dict) -> str:
     elif category == "Competitor Intelligence":
         return "竞品产品方向有变化"
 
+    # Tweet fallback: generate a minimal Chinese label from source + content
+    if item.get("type") == "tweet":
+        source = item.get("source", "")
+        content = compact(item.get("content", "") or title, 40)
+        if source:
+            return f"【{source}】{content}"
+        return content
+
     # Fallback: use original title so items remain distinguishable
     return compact(title, 60)
 
@@ -1165,7 +1174,9 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     # NOTE: STATE_FILE is written at end of run() so errors from Pushover/quality/health
     # are all captured. Do not move this save_json call earlier.
 
-    if send_pushover and push:
+    if send_pushover and push and len(discord_items) < PUSHOVER_MIN_ITEMS:
+        errors.append(f"Pushover skipped: only {len(discord_items)} item(s), minimum is {PUSHOVER_MIN_ITEMS}")
+    if send_pushover and push and len(discord_items) >= PUSHOVER_MIN_ITEMS:
         # Dedup: send once per session (morning / afternoon) per calendar day (SGT)
         _now_sgt = datetime.now(timezone(timedelta(hours=8)))
         today_sgt = _now_sgt.strftime("%Y-%m-%d")
