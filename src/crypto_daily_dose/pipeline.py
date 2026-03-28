@@ -1067,7 +1067,7 @@ def check_and_build_cookie_alert() -> str | None:
     )
 
 
-def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repeat: bool = False, use_llm: bool = False, lookback_hours: int | None = None) -> int:
+def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repeat: bool = False, use_llm: bool = False, lookback_hours: int | None = None, window: str = "auto") -> int:
     if reset_repeat:
         reset_repeat_memory()
     effective_lookback = lookback_hours if lookback_hours is not None else LOOKBACK_HOURS
@@ -1166,19 +1166,29 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     # are all captured. Do not move this save_json call earlier.
 
     if send_pushover and push:
-        # Dedup: only send Pushover once per calendar day (SGT)
-        today_sgt = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+        # Dedup: send once per session (morning / afternoon) per calendar day (SGT)
+        _now_sgt = datetime.now(timezone(timedelta(hours=8)))
+        today_sgt = _now_sgt.strftime("%Y-%m-%d")
+        # Resolve session slot: explicit window arg overrides time-based auto-detect
+        if window == "morning":
+            _session_slot = "morning"
+            _session_label = "早报"
+        elif window == "afternoon":
+            _session_slot = "afternoon"
+            _session_label = "下午报"
+        else:  # "auto"
+            _session_slot = "morning" if _now_sgt.hour < 14 else "afternoon"
+            _session_label = "早报" if _session_slot == "morning" else "下午报"
+        _dedup_key = f"{today_sgt}_{_session_slot}"
         pushover_state_file = STATE_DIR / "pushover_sent.json"
         pushover_state = load_json(pushover_state_file, {})
-        if pushover_state.get("last_sent_date") == today_sgt:
-            errors.append("Pushover already sent today, skipping")
+        if pushover_state.get(_dedup_key):
+            errors.append(f"Pushover already sent for {_dedup_key}, skipping")
         else:
             cfg = load_json(PUSHOVER_CFG, {})
             token, user = cfg.get("app_token"), cfg.get("user_key")
             if token and user:
-                # Build title with date, session label (早报/下午报), and item count
-                _now_sgt = datetime.now(timezone(timedelta(hours=8)))
-                _session_label = "早报" if _now_sgt.hour < 14 else "下午报"
+                # Build title with date, session label, and item count
                 _item_count = len(discord_items)
                 _push_title = f"💊 Crypto Daily Dose — {today_sgt} {_session_label}（{_item_count}条）"
                 payload = urllib.parse.urlencode({
@@ -1192,7 +1202,8 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
                 with urllib.request.urlopen(req, timeout=20) as resp:
                     parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
                 if parsed.get("status") == 1:
-                    save_json(pushover_state_file, {"last_sent_date": today_sgt})
+                    pushover_state[_dedup_key] = True
+                    save_json(pushover_state_file, pushover_state)
                 else:
                     errors.append(f"Pushover API error: {parsed}")
             else:
@@ -1265,6 +1276,9 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
 
 
 if __name__ == "__main__":
+    _window_arg = "auto"
+    if "--window" in sys.argv:
+        _window_arg = sys.argv[sys.argv.index("--window") + 1]
     raise SystemExit(
         run(
             send_pushover=("--no-pushover" not in sys.argv),
@@ -1272,5 +1286,6 @@ if __name__ == "__main__":
             reset_repeat=("--reset-repeat-memory" in sys.argv),
             use_llm=("--use-llm" in sys.argv),
             lookback_hours=int(sys.argv[sys.argv.index("--lookback") + 1]) if "--lookback" in sys.argv else None,
+            window=_window_arg,
         )
     )
