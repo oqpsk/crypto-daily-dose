@@ -1083,7 +1083,24 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     cutoff = now_utc() - timedelta(hours=effective_lookback)
     items, errors = [], []
     html_stats = {}
+
+    # Resolve session window for conditional source skipping
+    _now_sgt = datetime.now(timezone(timedelta(hours=8)))
+    if window == "morning":
+        _session_window = "morning"
+    elif window == "afternoon":
+        _session_window = "afternoon"
+    else:
+        _session_window = "morning" if _now_sgt.hour < 14 else "afternoon"
+
+    # Sources to skip in morning window (rate-limited, fetch only in afternoon)
+    MORNING_SKIP_SOURCES = {"Optimism Blog"}
+
     for source_name, url, item_type in RSS_FEEDS:
+        # Skip rate-limited sources in morning window
+        if _session_window == "morning" and source_name in MORNING_SKIP_SOURCES:
+            errors.append(f"RSS {source_name}: skipped in morning window (rate limit mitigation)")
+            continue
         source_id = f"rss::{source_name.lower().replace(' ', '_')}"
         try:
             new_items = parse_feed_entries(source_name, url, item_type, cutoff)
