@@ -29,6 +29,8 @@
     ["Messari", "https://messari.io/rss", "news"],
     ["CertiK", "https://medium.com/feed/certik", "security_blog"],
     ["SlowMist", "https://slowmist.medium.com/feed", "security_blog"],
+    ["BlockSec", "https://blocksecteam.medium.com/feed", "security_blog"],
+    ["MetaMask Medium", "https://medium.com/feed/metamask", "wallet_blog"],
     ["Decrypt", "https://decrypt.co/feed", "news"],
     ["The Defiant", "https://thedefiant.io/feed", "news"],
     ["Optimism Blog", "https://optimism.mirror.xyz/feed", "blog"],
@@ -51,6 +53,7 @@
     ["Rekt", "https://rekt.news/", ["/"], "security_blog"],
     ["Chainalysis Blog", "https://www.chainalysis.com/blog/", ["/blog/"], "security_blog"],
     ["TRM Labs Blog", "https://www.trmlabs.com/resources/blog", ["/resources/blog/"], "security_blog"],
+    ["PeckShield News", "https://peckshield.com/news", ["/news/"], "security_blog"],
     ["Circle Blog", "https://www.circle.com/blog", ["/blog/"], "payments_blog"],
     ["Fireblocks Blog", "https://www.fireblocks.com/blog/", ["/blog/"], "payments_blog"]
   ],
