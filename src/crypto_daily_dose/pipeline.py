@@ -1097,6 +1097,9 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
     MORNING_SKIP_SOURCES = {"Optimism Blog"}
 
     for source_name, url, item_type in RSS_FEEDS:
+        # Skip disabled sources (marked with [DISABLED] in name)
+        if "[DISABLED]" in source_name:
+            continue
         # Skip rate-limited sources in morning window
         if _session_window == "morning" and source_name in MORNING_SKIP_SOURCES:
             errors.append(f"RSS {source_name}: skipped in morning window (rate limit mitigation)")
