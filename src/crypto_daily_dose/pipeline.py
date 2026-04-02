@@ -246,6 +246,8 @@ def classify(item: dict) -> str:
             return name
     if item.get("type") in {"eip", "github_pull", "github_event"}:
         return "Protocol / EIP / Infra"
+    if item.get("type") == "x_tweet" and "tron" in item.get("source", "").lower():
+        return "TRON / Stablecoin / Payments"
     return "Market Structure / Narrative"
 
 
@@ -317,7 +319,7 @@ def score_item(item: dict, _gate_result: tuple[bool, list[str]] | None = None) -
     if any(t in text for t in ["exploit", "hack", "drain", "critical", "regulation", "final", "mainnet", "launch"]):
         impact = max(impact, 2)
 
-    novelty = 2 if item.get("type") in {"github_pull", "github_event", "eip", "blog"} else 1
+    novelty = 2 if item.get("type") in {"github_pull", "github_event", "eip", "blog", "x_tweet"} else 1
     if item.get("hours_ago", 999) <= 12:
         novelty = min(3, novelty + 1)
 
@@ -521,6 +523,155 @@ def parse_html_sources(cutoff: datetime) -> tuple[list[dict], dict, list[str]]:
         source_accepted = sum(1 for item in items if item.get('source') == source_name)
         update_source_health(source_id, success=True, item_count=source_accepted)
     return items, stats, errors
+
+
+def parse_x_tweets(cutoff: datetime) -> list[dict]:
+    """Fetch recent tweets from configured X accounts via cookie auth."""
+    import json as _json
+    import urllib.parse
+
+    cfg_path = ROOT / "state" / "x_cookies.json"
+    if not cfg_path.exists():
+        return []
+
+    try:
+        with open(cfg_path) as f:
+            x_cfg = _json.load(f)
+    except Exception:
+        return []
+
+    auth_token = x_cfg.get("auth_token", "")
+    ct0 = x_cfg.get("ct0", "")
+    accounts = x_cfg.get("accounts", [])
+
+    if not auth_token or not ct0 or not accounts:
+        return []
+
+    BEARER = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+    base_headers = {
+        "Cookie": f"auth_token={auth_token}; ct0={ct0}",
+        "x-csrf-token": ct0,
+        "Authorization": f"Bearer {BEARER}",
+        "User-Agent": USER_AGENT,
+    }
+
+    # Step 1: resolve screen_names to rest_ids
+    user_id_map = {}
+    for screen_name in accounts:
+        try:
+            vars_str = urllib.parse.quote(_json.dumps({"screen_name": screen_name}))
+            url = f"https://x.com/i/api/graphql/G3KGOASz96M-Qu0nwmGXNg/UserByScreenName?variables={vars_str}"
+            req = urllib.request.Request(url, headers=base_headers)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = _json.loads(resp.read())
+            result = data.get("data", {}).get("user", {}).get("result", {})
+            if result.get("__typename") == "User":
+                user_id_map[screen_name] = result["rest_id"]
+        except Exception:
+            pass
+
+    items = []
+
+    # Step 2: fetch timeline for each user
+    for screen_name, user_id in user_id_map.items():
+        try:
+            timeline_vars = {
+                "userId": user_id,
+                "count": 20,
+                "includePromotedContent": False,
+                "withQuickPromoteEligibilityTweetFields": False,
+                "withVoice": True,
+                "withV2Timeline": True,
+            }
+            features = {
+                "rweb_tipjar_consumption_enabled": True,
+                "responsive_web_graphql_exclude_directive_enabled": True,
+                "verified_phone_label_enabled": False,
+                "creator_subscriptions_tweet_preview_api_enabled": True,
+                "responsive_web_graphql_timeline_navigation_enabled": True,
+                "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+                "communities_web_enable_tweet_community_results_fetch": True,
+                "c9s_tweet_anatomy_moderator_badge_enabled": True,
+                "articles_preview_enabled": True,
+                "responsive_web_edit_tweet_api_enabled": True,
+                "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+                "view_counts_everywhere_api_enabled": True,
+                "longform_notetweets_consumption_enabled": True,
+                "responsive_web_twitter_article_tweet_consumption_enabled": True,
+                "tweet_awards_web_tipping_enabled": False,
+                "creator_subscriptions_quote_tweet_preview_enabled": False,
+                "freedom_of_speech_not_reach_fetch_enabled": True,
+                "standardized_nudges_misinfo": True,
+                "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+                "rweb_video_timestamps_enabled": True,
+                "longform_notetweets_rich_text_read_enabled": True,
+                "longform_notetweets_inline_media_enabled": True,
+                "responsive_web_enhance_cards_enabled": False,
+            }
+            vars_encoded = urllib.parse.quote(_json.dumps(timeline_vars))
+            feat_encoded = urllib.parse.quote(_json.dumps(features))
+            url = f"https://x.com/i/api/graphql/E3opETHurmVJflFsUBVuUQ/UserTweets?variables={vars_encoded}&features={feat_encoded}"
+            req = urllib.request.Request(url, headers=base_headers)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = _json.loads(resp.read())
+
+            # Walk the timeline entries
+            timeline = (data.get("data", {}).get("user", {}).get("result", {})
+                        .get("timeline_v2", {}).get("timeline", {})
+                        .get("instructions", []))
+            for instruction in timeline:
+                if instruction.get("type") != "TimelineAddEntries":
+                    continue
+                for entry in instruction.get("entries", []):
+                    content = entry.get("content", {})
+                    if content.get("entryType") != "TimelineTimelineItem":
+                        continue
+                    item_content = content.get("itemContent", {})
+                    if item_content.get("itemType") != "TimelineTweet":
+                        continue
+                    tweet_result = item_content.get("tweet_results", {}).get("result", {})
+                    if tweet_result.get("__typename") not in ("Tweet", "TweetWithVisibilityResults"):
+                        continue
+                    # Handle TweetWithVisibilityResults wrapper
+                    if tweet_result.get("__typename") == "TweetWithVisibilityResults":
+                        tweet_result = tweet_result.get("tweet", tweet_result)
+
+                    legacy = tweet_result.get("legacy", {})
+                    tweet_id = legacy.get("id_str") or tweet_result.get("rest_id", "")
+                    created_at = legacy.get("created_at", "")
+                    full_text = legacy.get("full_text", "")
+                    rt_count = legacy.get("retweet_count", 0)
+                    like_count = legacy.get("favorite_count", 0)
+
+                    # Skip retweets of others
+                    if full_text.startswith("RT @"):
+                        continue
+
+                    dt = None
+                    if created_at:
+                        try:
+                            dt = datetime.strptime(created_at, "%a %b %d %H:%M:%S +0000 %Y").replace(tzinfo=timezone.utc)
+                        except ValueError:
+                            pass
+
+                    if dt and dt < cutoff:
+                        continue
+
+                    tweet_url = f"https://x.com/{screen_name}/status/{tweet_id}"
+                    items.append({
+                        "title": compact(full_text, 120),
+                        "content": compact(full_text, 400),
+                        "url": tweet_url,
+                        "source": f"X @{screen_name}",
+                        "type": "x_tweet",
+                        "timestamp": dt.isoformat() if dt else "",
+                        "engagement": rt_count + like_count,
+                    })
+
+        except Exception as e:
+            pass  # silently skip failed accounts
+
+    return items
 
 
 def parse_github(cutoff: datetime) -> list[dict]:
@@ -1127,6 +1278,11 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
         items.extend(github_items)
     except Exception as e:
         errors.append(f"GitHub: {e}")
+    try:
+        x_items = parse_x_tweets(cutoff)
+        items.extend(x_items)
+    except Exception as e:
+        errors.append(f"X tweets: {e}")
 
     # Price monitoring: inject alert items if any asset moved ≥5%
     try:
