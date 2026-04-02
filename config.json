@@ -1,6 +1,7 @@
 {
   "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) OpenClaw-CryptoDailyDose/0.3",
   "lookback_hours": 30,
+  "eip_lookback_hours": 48,
   "limits": {
     "rss_items_per_feed": 12,
     "github_items": 12,

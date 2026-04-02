@@ -77,6 +77,7 @@ if not PUSHOVER_CFG.is_absolute():
     PUSHOVER_CFG = ROOT / PUSHOVER_CFG
 USER_AGENT = CONFIG["user_agent"]
 LOOKBACK_HOURS = int(CONFIG["lookback_hours"])
+EIP_LOOKBACK_HOURS = int(CONFIG.get("eip_lookback_hours", LOOKBACK_HOURS))
 MAX_RSS_ITEMS_PER_FEED = int(CONFIG["limits"]["rss_items_per_feed"])
 MAX_GITHUB_ITEMS = int(CONFIG["limits"]["github_items"])
 MAX_DISCORD_ITEMS = int(CONFIG["limits"]["discord_items"])
@@ -1106,7 +1107,9 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
             continue
         source_id = f"rss::{source_name.lower().replace(' ', '_')}"
         try:
-            new_items = parse_feed_entries(source_name, url, item_type, cutoff)
+            # EIP/protocol sources use extended lookback window
+            src_cutoff = (now_utc() - timedelta(hours=EIP_LOOKBACK_HOURS)) if item_type in {"eip", "github_pull", "github_event"} else cutoff
+            new_items = parse_feed_entries(source_name, url, item_type, src_cutoff)
             items.extend(new_items)
             update_source_health(source_id, success=True, item_count=len(new_items))
         except Exception as e:
@@ -1118,8 +1121,9 @@ def run(send_pushover: bool = True, repeat_suppression: bool = True, reset_repea
         errors.extend(html_errors)
     except Exception as e:
         errors.append(f"HTML sources: {e}")
+    eip_cutoff = now_utc() - timedelta(hours=EIP_LOOKBACK_HOURS)
     try:
-        github_items = parse_github(cutoff)
+        github_items = parse_github(eip_cutoff)
         items.extend(github_items)
     except Exception as e:
         errors.append(f"GitHub: {e}")
