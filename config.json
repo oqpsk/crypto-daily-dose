@@ -49,6 +49,7 @@
   ],
   "html_sources": [
     ["MetaMask News", "https://metamask.io/news/", ["/news/"], "wallet_blog"],
+    ["Phantom Blog", "https://phantom.app/learn/blog", ["/learn/blog/"], "wallet_blog"],
     ["Safe Blog", "https://safe.global/blog", ["/blog/"], "wallet_blog"],
     ["Trust Wallet Blog", "https://trustwallet.com/blog", ["/blog/"], "wallet_blog"],
     ["Paradigm Writing", "https://www.paradigm.xyz/writing", ["/20", "/writing/"], "research"],
@@ -65,7 +66,7 @@
     "protocol_infra": ["ethereum upgrade", "hard fork", "eip-", "erc-", "rollup", "sequencer", "data availability", "execution layer", "consensus layer", "l2", "bridge", "interop", "client release"],
     "security_risk_compliance": ["exploit", "hack", "vulnerability", "approval draining", "signature abuse", "phishing", "sanctions", "aml", "compliance", "regulator", "sec", "ofac"],
     "tron_stablecoin_payments": ["tron", "trc20", "usdt", "usdc", "stablecoin", "payment rail", "cross-border payment", "gas model", "fee model", "energy model", "settlement", "merchant"],
-    "competitors": ["phantom", "metamask", "safe", "rabby", "zerion", "okx wallet", "bitget wallet", "trust wallet"],
+    "competitors": ["phantom", "metamask", "safe", "rabby", "zerion", "okx wallet", "bitget wallet", "trust wallet", "wallet update", "wallet feature"],
     "market_structure": ["adoption", "capital flow", "stablecoin growth", "market structure", "infrastructure narrative"]
   },
   "exclusions": {
@@ -78,7 +79,7 @@
     ["Protocol / EIP / Infra", ["eip-", "erc-", "ethereum upgrade", "hard fork", "rollup", "sequencer", "data availability", "execution layer", "consensus layer", "client"]],
     ["Security / Risk / Compliance", ["security", "exploit", "hack", "vulnerability", "approval draining", "signature abuse", "phishing", "sanctions", "aml", "compliance", "regulatory"]],
     ["TRON / Stablecoin / Payments", ["tron", "trc20", "usdt", "usdc", "stablecoin", "payment", "payments", "settlement", "merchant", "cross-border", "energy model", "fee model"]],
-    ["Competitor Intelligence", ["phantom", "metamask", "safe", "rabby", "zerion", "okx wallet", "bitget wallet", "trust wallet"]],
+    ["Competitor Intelligence", ["phantom", "metamask", "safe", "rabby", "zerion", "okx wallet", "bitget wallet", "trust wallet", "wallet update", "wallet feature"]],
     ["Market Structure / Narrative", ["adoption", "capital flow", "stablecoin growth", "market structure", "narrative"]]
   ]
 }
